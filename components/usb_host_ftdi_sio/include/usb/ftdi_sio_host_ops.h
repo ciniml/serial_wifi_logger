@@ -6,6 +6,10 @@
 
 #pragma once
 
+#include "sdkconfig.h"
+
+#ifdef CONFIG_USB_SERIAL_DRIVER_FTDI
+
 #include "esp_err.h"
 #include "usb/ftdi_host_types.h"
 
@@ -110,3 +114,5 @@ esp_err_t ftdi_sio_host_get_modem_status(ftdi_sio_dev_hdl_t ftdi_hdl,
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* CONFIG_USB_SERIAL_DRIVER_FTDI */

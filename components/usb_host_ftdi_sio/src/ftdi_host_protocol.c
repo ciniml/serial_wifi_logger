@@ -200,10 +200,25 @@ esp_err_t ftdi_calculate_baudrate_divisor(uint32_t baudrate,
         divisor = 0x1FFFF8;
     }
 
+    uint32_t integral_part = divisor >> 3;
+    uint32_t fractional_part = divisor & 0x07;  
+    uint32_t divisor_encoded_value = integral_part;
+
+    switch(fractional_part) {
+        case 0b000: divisor_encoded_value |= (0b000 << 14); break; // .000
+        case 0b001: divisor_encoded_value |= (0b011 << 14); break; // .125
+        case 0b010: divisor_encoded_value |= (0b010 << 14); break; // .250
+        case 0b011: divisor_encoded_value |= (0b100 << 14); break; // .375
+        case 0b100: divisor_encoded_value |= (0b001 << 14); break; // .500
+        case 0b101: divisor_encoded_value |= (0b101 << 14); break; // .625
+        case 0b110: divisor_encoded_value |= (0b110 << 14); break; // .750
+        case 0b111: divisor_encoded_value |= (0b111 << 14); break; // .875
+        default: break;
+    }
+
     // Extract value and index
-    // For FT232R: value contains bits[15:0], index contains bits[17:16]
-    *value_out = divisor & 0xFFFF;
-    *index_out = (divisor >> 16) & 0xFFFF;
+    *value_out = divisor_encoded_value & 0xFFFF;
+    *index_out = (divisor_encoded_value >> 16) & 0xFFFF;
 
     // Special handling for sub-integer divisors
     if (divisor == 0) {

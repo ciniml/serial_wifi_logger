@@ -184,11 +184,17 @@ static void usb_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg
         ESP_LOGD(TAG, "New USB device");
         if (p_ftdi_sio_obj->new_dev_cb) {
             const usb_device_desc_t *device_desc;
-            usb_host_device_info_t dev_info;
-            ESP_ERROR_CHECK(usb_host_device_info(event_msg->new_dev.address, &dev_info));
-            ESP_ERROR_CHECK(usb_host_get_device_descriptor(dev_info.dev_hdl, &device_desc));
-            p_ftdi_sio_obj->new_dev_cb(device_desc->idVendor, device_desc->idProduct,
-                                       p_ftdi_sio_obj->new_dev_cb_arg);
+            usb_device_handle_t dev_hdl;
+            // ESP-IDF v6.0: Open device temporarily to get descriptor
+            esp_err_t err = usb_host_device_open(p_ftdi_sio_obj->ftdi_client_hdl,
+                                                  event_msg->new_dev.address,
+                                                  &dev_hdl);
+            if (err == ESP_OK) {
+                ESP_ERROR_CHECK(usb_host_get_device_descriptor(dev_hdl, &device_desc));
+                p_ftdi_sio_obj->new_dev_cb(device_desc->idVendor, device_desc->idProduct,
+                                           p_ftdi_sio_obj->new_dev_cb_arg);
+                usb_host_device_close(p_ftdi_sio_obj->ftdi_client_hdl, dev_hdl);
+            }
         }
         break;
     case USB_HOST_CLIENT_EVENT_DEV_GONE: {
@@ -196,10 +202,8 @@ static void usb_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg
         ftdi_dev_t *ftdi_dev;
         FTDI_SIO_ENTER_CRITICAL();
         SLIST_FOREACH(ftdi_dev, &p_ftdi_sio_obj->ftdi_devices_list, list_entry) {
-            usb_device_handle_t dev_hdl;
-            ESP_ERROR_CHECK(usb_host_device_addr_to_handle(p_ftdi_sio_obj->ftdi_client_hdl,
-                           event_msg->dev_gone.dev_addr, &dev_hdl));
-            if (dev_hdl == ftdi_dev->dev_hdl) {
+            // ESP-IDF v6.0: dev_gone now provides dev_hdl directly
+            if (event_msg->dev_gone.dev_hdl == ftdi_dev->dev_hdl) {
                 if (ftdi_dev->event_cb) {
                     ftdi_dev->event_cb(FTDI_SIO_HOST_DEVICE_DISCONNECTED, ftdi_dev->cb_arg);
                 }
@@ -251,6 +255,7 @@ static esp_err_t ftdi_transfers_allocate(ftdi_dev_t *ftdi_dev, size_t in_buf_siz
     ESP_GOTO_ON_ERROR(
         usb_host_transfer_alloc(in_buf_size, 0, &ftdi_dev->data.in_xfer),
         err, TAG, "Unable to allocate IN transfer");
+    ftdi_dev->data.in_xfer->device_handle = ftdi_dev->dev_hdl;  // ESP-IDF v6.0: Set device handle
     ftdi_dev->data.in_xfer->callback = in_xfer_cb;
     ftdi_dev->data.in_xfer->context = ftdi_dev;
     ftdi_dev->data.in_xfer->bEndpointAddress = ftdi_dev->data.bulk_in_ep;
@@ -261,6 +266,7 @@ static esp_err_t ftdi_transfers_allocate(ftdi_dev_t *ftdi_dev, size_t in_buf_siz
     ESP_GOTO_ON_ERROR(
         usb_host_transfer_alloc(out_buf_size, 0, &ftdi_dev->data.out_xfer),
         err, TAG, "Unable to allocate OUT transfer");
+    ftdi_dev->data.out_xfer->device_handle = ftdi_dev->dev_hdl;  // ESP-IDF v6.0: Set device handle
     ftdi_dev->data.out_xfer->callback = out_xfer_cb;
     ftdi_dev->data.out_xfer->context = ftdi_dev;
     ftdi_dev->data.out_xfer->bEndpointAddress = ftdi_dev->data.bulk_out_ep;
@@ -270,6 +276,7 @@ static esp_err_t ftdi_transfers_allocate(ftdi_dev_t *ftdi_dev, size_t in_buf_siz
     ESP_GOTO_ON_ERROR(
         usb_host_transfer_alloc(FTDI_CTRL_TRANSFER_SIZE, 0, &ftdi_dev->ctrl_transfer),
         err, TAG, "Unable to allocate CTRL transfer");
+    ftdi_dev->ctrl_transfer->device_handle = ftdi_dev->dev_hdl;  // ESP-IDF v6.0: Set device handle
     ftdi_dev->ctrl_transfer->callback = out_xfer_cb;
     ftdi_dev->ctrl_transfer->context = ftdi_dev;
     ftdi_dev->ctrl_transfer->bEndpointAddress = 0;
@@ -368,7 +375,9 @@ static esp_err_t ftdi_find_and_open_usb_device(uint16_t vid, uint16_t pid, int t
 
         for (int i = 0; i < num_of_devices; i++) {
             usb_device_handle_t current_device;
-            if (usb_host_device_addr_to_handle(p_ftdi_sio_obj->ftdi_client_hdl, dev_addr_list[i], &current_device) != ESP_OK) {
+            // ESP-IDF v6.0: Use usb_host_device_open to get device handle
+            esp_err_t err = usb_host_device_open(p_ftdi_sio_obj->ftdi_client_hdl, dev_addr_list[i], &current_device);
+            if (err != ESP_OK) {
                 continue;
             }
 
@@ -377,15 +386,16 @@ static esp_err_t ftdi_find_and_open_usb_device(uint16_t vid, uint16_t pid, int t
 
             if ((vid == FTDI_HOST_ANY_VID || vid == device_desc->idVendor) &&
                 (pid == FTDI_HOST_ANY_PID || pid == device_desc->idProduct)) {
-                // Found matching device, try to open it
-                esp_err_t err = usb_host_device_open(p_ftdi_sio_obj->ftdi_client_hdl, dev_addr_list[i], &(*dev)->dev_hdl);
-                if (err == ESP_OK) {
-                    (*dev)->vid = device_desc->idVendor;
-                    (*dev)->pid = device_desc->idProduct;
-                    ESP_LOGD(TAG, "Found FTDI device: VID=0x%04x, PID=0x%04x", (*dev)->vid, (*dev)->pid);
-                    return ESP_OK;
-                }
+                // Found matching device
+                (*dev)->dev_hdl = current_device;
+                (*dev)->vid = device_desc->idVendor;
+                (*dev)->pid = device_desc->idProduct;
+                ESP_LOGD(TAG, "Found FTDI device: VID=0x%04x, PID=0x%04x", (*dev)->vid, (*dev)->pid);
+                return ESP_OK;
             }
+
+            // Not the device we're looking for, close it
+            usb_host_device_close(p_ftdi_sio_obj->ftdi_client_hdl, current_device);
         }
         vTaskDelay(pdMS_TO_TICKS(50));
     } while (xTaskCheckForTimeOut(&connection_timeout, &timeout_ticks) == pdFALSE);
@@ -433,15 +443,16 @@ esp_err_t ftdi_sio_host_install(const ftdi_sio_host_driver_config_t *driver_conf
     p_ftdi_sio_obj = ftdi_obj;
 
     // Create driver task
-    BaseType_t task_created = xTaskCreatePinnedToCore(
+    TaskHandle_t task_created = NULL;
+    BaseType_t result = xTaskCreatePinnedToCore(
                                   ftdi_client_task,
                                   "FTDI",
                                   driver_config->driver_task_stack_size,
                                   NULL,
                                   driver_config->driver_task_priority,
-                                  NULL,
+                                  &task_created,
                                   driver_config->xCoreID >= 0 ? driver_config->xCoreID : tskNO_AFFINITY);
-    ESP_GOTO_ON_FALSE(task_created, ESP_ERR_NO_MEM, err_client, TAG, "Failed to create task");
+    ESP_GOTO_ON_FALSE(result == pdPASS, ESP_ERR_NO_MEM, err_client, TAG, "Failed to create task");
 
     xTaskNotifyGive((TaskHandle_t)task_created);
     ESP_LOGI(TAG, "FTDI SIO driver installed");

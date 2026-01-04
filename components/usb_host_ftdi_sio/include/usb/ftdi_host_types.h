@@ -6,6 +6,10 @@
 
 #pragma once
 
+#include "sdkconfig.h"
+
+#ifdef CONFIG_USB_SERIAL_DRIVER_FTDI
+
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
@@ -190,3 +194,5 @@ typedef struct {
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* CONFIG_USB_SERIAL_DRIVER_FTDI */
