@@ -191,8 +191,10 @@ static void usb_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg
                                                   &dev_hdl);
             if (err == ESP_OK) {
                 ESP_ERROR_CHECK(usb_host_get_device_descriptor(dev_hdl, &device_desc));
-                p_ftdi_sio_obj->new_dev_cb(device_desc->idVendor, device_desc->idProduct,
+                if( device_desc->idVendor == FTDI_VID ) {
+                    p_ftdi_sio_obj->new_dev_cb(device_desc->idVendor, device_desc->idProduct,
                                            p_ftdi_sio_obj->new_dev_cb_arg);
+                }
                 usb_host_device_close(p_ftdi_sio_obj->ftdi_client_hdl, dev_hdl);
             }
         }

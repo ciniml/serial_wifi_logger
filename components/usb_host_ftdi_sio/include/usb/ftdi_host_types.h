@@ -8,7 +8,7 @@
 
 #include "sdkconfig.h"
 
-#ifdef CONFIG_USB_SERIAL_DRIVER_FTDI
+#ifdef CONFIG_USB_HOST_ENABLE_FTDI_SIO_DRIVER
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -195,4 +195,4 @@ typedef struct {
 }
 #endif
 
-#endif /* CONFIG_USB_SERIAL_DRIVER_FTDI */
+#endif /* CONFIG_USB_HOST_ENABLE_FTDI_SIO_DRIVER */

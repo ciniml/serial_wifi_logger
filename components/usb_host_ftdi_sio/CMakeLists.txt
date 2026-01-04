@@ -1,5 +1,5 @@
-# Only build FTDI driver when selected in Kconfig
-if(CONFIG_USB_SERIAL_DRIVER_FTDI)
+# Only build FTDI driver when enabled in Kconfig
+if(CONFIG_USB_HOST_ENABLE_FTDI_SIO_DRIVER)
     idf_component_register(
         SRCS
             "src/ftdi_host_protocol.c"
