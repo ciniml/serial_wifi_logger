@@ -120,8 +120,9 @@ static esp_err_t ftdi_reset_transfer_endpoint(usb_device_handle_t dev_hdl, usb_t
 /**
  * @brief Data received callback (Bulk IN)
  *
- * IMPORTANT: FTDI devices include modem status in the first 2 bytes of every packet.
- * We must strip these bytes before passing data to user callback.
+ * IMPORTANT: FTDI devices include modem status in the first 2 bytes of EVERY packet.
+ * Each USB packet is in_mps bytes in size. We must process each packet separately
+ * to strip the modem status bytes from each packet.
  */
 static void in_xfer_cb(usb_transfer_t *transfer)
 {
@@ -129,26 +130,41 @@ static void in_xfer_cb(usb_transfer_t *transfer)
     assert(ftdi_dev);
 
     if (transfer->status == USB_TRANSFER_STATUS_COMPLETED) {
-        // FTDI-specific: First 2 bytes are modem status
-        if (transfer->actual_num_bytes >= 2) {
-            ftdi_modem_status_t new_status;
-            ftdi_protocol_parse_modem_status(transfer->data_buffer, &new_status);
+        size_t total_bytes = transfer->actual_num_bytes;
+        size_t offset = 0;
+        const uint16_t mps = ftdi_dev->data.in_mps;
 
-            // Check if modem status changed
-            if (memcmp(&new_status, &ftdi_dev->modem_status_current, sizeof(ftdi_modem_status_t)) != 0) {
-                ftdi_dev->modem_status_current = new_status;
-                // Notify user of modem status change
-                if (ftdi_dev->event_cb) {
-                    ftdi_dev->event_cb(FTDI_SIO_HOST_MODEM_STATUS, ftdi_dev->cb_arg);
+        // Process received data in chunks of MPS (Max Packet Size)
+        // Each chunk contains: [2 bytes modem status][actual data]
+        while (offset < total_bytes) {
+            // Calculate chunk size (either full MPS or remaining bytes)
+            size_t chunk_size = (total_bytes - offset) > mps ? mps : (total_bytes - offset);
+
+            // Each packet must have at least 2 bytes for modem status
+            if (chunk_size >= 2) {
+                // Extract modem status from first 2 bytes of this packet
+                ftdi_modem_status_t new_status;
+                ftdi_protocol_parse_modem_status(transfer->data_buffer + offset, &new_status);
+
+                // Check if modem status changed
+                if (memcmp(&new_status, &ftdi_dev->modem_status_current, sizeof(ftdi_modem_status_t)) != 0) {
+                    ftdi_dev->modem_status_current = new_status;
+                    // Notify user of modem status change
+                    if (ftdi_dev->event_cb) {
+                        ftdi_dev->event_cb(FTDI_SIO_HOST_MODEM_STATUS, ftdi_dev->cb_arg);
+                    }
+                }
+
+                // Pass actual data (skip first 2 bytes) to user callback
+                size_t data_len = chunk_size - 2;
+                if (data_len > 0 && ftdi_dev->data_cb) {
+                    ftdi_dev->data_cb(transfer->data_buffer + offset + 2,
+                                     data_len,
+                                     ftdi_dev->cb_arg);
                 }
             }
 
-            // Pass actual data (skip first 2 bytes) to user callback
-            if (transfer->actual_num_bytes > 2 && ftdi_dev->data_cb) {
-                ftdi_dev->data_cb(transfer->data_buffer + 2,
-                                 transfer->actual_num_bytes - 2,
-                                 ftdi_dev->cb_arg);
-            }
+            offset += chunk_size;
         }
     } else if (transfer->status == USB_TRANSFER_STATUS_NO_DEVICE) {
         ESP_LOGD(TAG, "Device disconnected");
