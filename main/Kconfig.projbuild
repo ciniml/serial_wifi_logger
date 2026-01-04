@@ -28,3 +28,50 @@ menu "USB Serial Configuration"
     endchoice
 
 endmenu
+
+menu "TCP Server Configuration"
+
+    config TCP_SERVER_PORT
+        int "TCP Server Port"
+        range 1 65535
+        default 8888
+        help
+            Port number for the TCP server to listen on.
+
+    config TCP_RX_BUFFER_SIZE
+        int "TCP RX Buffer Size"
+        range 128 2048
+        default 512
+        help
+            Size of the TCP receive buffer in bytes.
+
+    config DATA_BUFFER_POOL_SIZE
+        int "Data Buffer Pool Size"
+        range 4 64
+        default 16
+        help
+            Number of data buffers in the static buffer pool.
+
+endmenu
+
+menu "WiFi Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA or WPA2) for the network.
+
+    config WIFI_MAXIMUM_RETRY
+        int "Maximum retry"
+        default 5
+        help
+            Set the Maximum retry to connect to the WiFi network.
+
+endmenu

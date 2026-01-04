@@ -27,6 +27,16 @@
 #include "usb/ftdi_sio_host_ops.h"
 #include "usb/ftdi_host_types.h"
 
+// WiFi and TCP includes
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "lwip/err.h"
+#include "lwip/sockets.h"
+#include "lwip/sys.h"
+#include "lwip/netdb.h"
+#include "esp_netif.h"
+
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
 #define EXAMPLE_TX_STRING           ("Auto-detect test string!")
 #define EXAMPLE_TX_TIMEOUT_MS       (1000)
@@ -61,12 +71,44 @@ typedef struct {
     SemaphoreHandle_t disconnected_sem;
 } device_info_t;
 
+// TCP server management structure
+typedef struct {
+    int listen_sock;           // Listening socket
+    int client_sock;           // Client socket (-1 = not connected)
+    bool connected;            // Connection status
+    SemaphoreHandle_t tx_mutex; // TX mutual exclusion
+} tcp_server_t;
+
+// Data buffer for queue items
+typedef struct {
+    uint8_t data[512];         // Data buffer
+    size_t len;                // Data length
+    bool in_use;               // Buffer in use flag
+} data_buffer_t;
+
+// Buffer pool management
+typedef struct {
+    data_buffer_t buffers[CONFIG_DATA_BUFFER_POOL_SIZE];
+    SemaphoreHandle_t mutex;
+} buffer_pool_t;
+
 // ============= GLOBAL VARIABLES =============
 
 static QueueHandle_t device_queue;
+static tcp_server_t tcp_server;
+static QueueHandle_t usb_to_tcp_queue;  // USB → TCP queue (stores buffer pointers)
+static QueueHandle_t tcp_to_usb_queue;  // TCP → USB queue (stores buffer pointers)
+static device_info_t *current_device = NULL;  // Currently connected USB device
+static EventGroupHandle_t wifi_event_group;
+static int s_retry_num = 0;
+static buffer_pool_t buffer_pool;  // Static buffer pool
+
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
 
 // ============= FORWARD DECLARATIONS =============
 
+// USB functions
 static void usb_lib_task(void *arg);
 static void cdc_new_device_callback(usb_device_handle_t usb_dev);
 static void ftdi_new_device_callback(uint16_t vid, uint16_t pid, void *user_arg);
@@ -77,6 +119,18 @@ static void ftdi_handle_event(ftdi_sio_host_dev_event_t event, void *user_ctx);
 static void handle_cdc_device(device_info_t *dev_info);
 static void handle_ftdi_device(device_info_t *dev_info);
 static void handle_device(device_info_t *dev_info);
+
+// Buffer pool management functions
+static void buffer_pool_init(void);
+static data_buffer_t* buffer_alloc(void);
+static void buffer_free(data_buffer_t *buf);
+
+// WiFi and TCP functions
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static void wifi_init_sta(void);
+static void tcp_server_task(void *pvParameters);
+static void usb_to_tcp_bridge_task(void *pvParameters);
+static void tcp_to_usb_bridge_task(void *pvParameters);
 
 // ============= USB HOST TASK =============
 
@@ -97,6 +151,349 @@ static void usb_lib_task(void *arg)
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
             ESP_LOGI(TAG, "USB: All devices freed");
             // Continue handling USB events to allow device reconnection
+        }
+    }
+}
+
+// ============= BUFFER POOL MANAGEMENT =============
+
+/**
+ * @brief Initialize buffer pool
+ */
+static void buffer_pool_init(void)
+{
+    buffer_pool.mutex = xSemaphoreCreateMutex();
+    if (buffer_pool.mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create buffer pool mutex");
+        return;
+    }
+
+    // Initialize all buffers as free
+    for (int i = 0; i < CONFIG_DATA_BUFFER_POOL_SIZE; i++) {
+        buffer_pool.buffers[i].in_use = false;
+        buffer_pool.buffers[i].len = 0;
+    }
+
+    ESP_LOGI(TAG, "Buffer pool initialized with %d buffers", CONFIG_DATA_BUFFER_POOL_SIZE);
+}
+
+/**
+ * @brief Allocate a buffer from the pool
+ *
+ * @return Pointer to allocated buffer, or NULL if pool is full
+ */
+static data_buffer_t* buffer_alloc(void)
+{
+    data_buffer_t *buf = NULL;
+
+    xSemaphoreTake(buffer_pool.mutex, portMAX_DELAY);
+
+    // Find first free buffer
+    for (int i = 0; i < CONFIG_DATA_BUFFER_POOL_SIZE; i++) {
+        if (!buffer_pool.buffers[i].in_use) {
+            buffer_pool.buffers[i].in_use = true;
+            buf = &buffer_pool.buffers[i];
+            break;
+        }
+    }
+
+    xSemaphoreGive(buffer_pool.mutex);
+
+    if (buf == NULL) {
+        ESP_LOGW(TAG, "Buffer pool exhausted");
+    }
+
+    return buf;
+}
+
+/**
+ * @brief Free a buffer back to the pool
+ *
+ * @param buf Pointer to buffer to free
+ */
+static void buffer_free(data_buffer_t *buf)
+{
+    if (buf == NULL) {
+        return;
+    }
+
+    xSemaphoreTake(buffer_pool.mutex, portMAX_DELAY);
+
+    // Verify buffer is from our pool
+    if (buf >= buffer_pool.buffers && buf < buffer_pool.buffers + CONFIG_DATA_BUFFER_POOL_SIZE) {
+        buf->in_use = false;
+        buf->len = 0;
+    } else {
+        ESP_LOGE(TAG, "Attempted to free buffer not from pool");
+    }
+
+    xSemaphoreGive(buffer_pool.mutex);
+}
+
+// ============= WIFI INITIALIZATION =============
+
+/**
+ * @brief WiFi event handler
+ */
+static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_retry_num < CONFIG_WIFI_MAXIMUM_RETRY) {
+            esp_wifi_connect();
+            s_retry_num++;
+            ESP_LOGI(TAG, "Retry to connect to the AP");
+        } else {
+            xEventGroupSetBits(wifi_event_group, WIFI_FAIL_BIT);
+        }
+        ESP_LOGI(TAG, "Connect to the AP fail");
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_retry_num = 0;
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+/**
+ * @brief Initialize WiFi station mode
+ */
+static void wifi_init_sta(void)
+{
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    // Create event group
+    wifi_event_group = xEventGroupCreate();
+
+    // Initialize TCP/IP stack
+    ESP_ERROR_CHECK(esp_netif_init());
+
+    // Create default event loop
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    // Create default WiFi STA interface
+    esp_netif_create_default_wifi_sta();
+
+    // Initialize WiFi with default config
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    // Register event handlers
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                          ESP_EVENT_ANY_ID,
+                                                          &wifi_event_handler,
+                                                          NULL,
+                                                          NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                          IP_EVENT_STA_GOT_IP,
+                                                          &wifi_event_handler,
+                                                          NULL,
+                                                          NULL));
+
+    // Configure WiFi
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = CONFIG_WIFI_SSID,
+            .password = CONFIG_WIFI_PASSWORD,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            .pmf_cfg = {
+                .capable = true,
+                .required = false
+            },
+        },
+    };
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    ESP_LOGI(TAG, "WiFi initialization finished");
+}
+
+// ============= TCP SERVER AND BRIDGE TASKS =============
+
+/**
+ * @brief TCP server task
+ *
+ * Listens for TCP connections and handles client communication
+ */
+static void tcp_server_task(void *pvParameters)
+{
+    struct sockaddr_in dest_addr;
+    dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(CONFIG_TCP_SERVER_PORT);
+
+    // Create listening socket
+    tcp_server.listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (tcp_server.listen_sock < 0) {
+        ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int opt = 1;
+    setsockopt(tcp_server.listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    ESP_LOGI(TAG, "TCP server binding to port %d", CONFIG_TCP_SERVER_PORT);
+    int err = bind(tcp_server.listen_sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (err != 0) {
+        ESP_LOGE(TAG, "Socket bind failed: errno %d", errno);
+        close(tcp_server.listen_sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    err = listen(tcp_server.listen_sock, 1);
+    if (err != 0) {
+        ESP_LOGE(TAG, "Socket listen failed: errno %d", errno);
+        close(tcp_server.listen_sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "TCP server listening on port %d", CONFIG_TCP_SERVER_PORT);
+
+    while (1) {
+        struct sockaddr_in source_addr;
+        socklen_t addr_len = sizeof(source_addr);
+
+        // Accept new client connection
+        int sock = accept(tcp_server.listen_sock, (struct sockaddr *)&source_addr, &addr_len);
+        if (sock < 0) {
+            ESP_LOGE(TAG, "Unable to accept connection: errno %d", errno);
+            continue;
+        }
+
+        // If already connected, close old connection
+        if (tcp_server.connected && tcp_server.client_sock >= 0) {
+            ESP_LOGI(TAG, "New client connecting, closing existing connection");
+            shutdown(tcp_server.client_sock, SHUT_RDWR);
+            close(tcp_server.client_sock);
+        }
+
+        // Set up new connection
+        tcp_server.client_sock = sock;
+        tcp_server.connected = true;
+
+        char addr_str[16];
+        inet_ntoa_r(source_addr.sin_addr, addr_str, sizeof(addr_str));
+        ESP_LOGI(TAG, "TCP client connected from %s:%d",
+                 addr_str, ntohs(source_addr.sin_port));
+
+        // Receive loop
+        uint8_t rx_buffer[CONFIG_TCP_RX_BUFFER_SIZE];
+        while (tcp_server.connected) {
+            int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+
+            if (len < 0) {
+                ESP_LOGE(TAG, "TCP recv failed: errno %d", errno);
+                break;
+            } else if (len == 0) {
+                ESP_LOGI(TAG, "TCP client disconnected");
+                break;
+            } else {
+                // Allocate buffer from pool
+                data_buffer_t *buf = buffer_alloc();
+                if (buf != NULL) {
+                    memcpy(buf->data, rx_buffer, len);
+                    buf->len = len;
+
+                    // Send buffer pointer to queue
+                    if (xQueueSend(tcp_to_usb_queue, &buf, 0) != pdTRUE) {
+                        ESP_LOGW(TAG, "TCP→USB queue full, data dropped");
+                        buffer_free(buf);  // Free buffer if queue is full
+                    }
+                } else {
+                    ESP_LOGW(TAG, "No buffer available, TCP data dropped");
+                }
+            }
+        }
+
+        // Connection closed
+        shutdown(sock, SHUT_RDWR);
+        close(sock);
+        tcp_server.client_sock = -1;
+        tcp_server.connected = false;
+        ESP_LOGI(TAG, "TCP connection closed");
+    }
+}
+
+/**
+ * @brief USB → TCP bridge task
+ *
+ * Forwards data from USB to TCP client
+ */
+static void usb_to_tcp_bridge_task(void *pvParameters)
+{
+    data_buffer_t *buf;
+
+    while (1) {
+        if (xQueueReceive(usb_to_tcp_queue, &buf, portMAX_DELAY) == pdTRUE) {
+            if (tcp_server.connected && tcp_server.client_sock >= 0) {
+                xSemaphoreTake(tcp_server.tx_mutex, portMAX_DELAY);
+
+                int to_write = buf->len;
+                int written = 0;
+                while (to_write > 0) {
+                    int ret = send(tcp_server.client_sock, buf->data + written, to_write, 0);
+                    if (ret < 0) {
+                        ESP_LOGE(TAG, "TCP send failed: errno %d", errno);
+                        tcp_server.connected = false;
+                        break;
+                    }
+                    written += ret;
+                    to_write -= ret;
+                }
+
+                xSemaphoreGive(tcp_server.tx_mutex);
+            }
+
+            // Free buffer after processing
+            buffer_free(buf);
+        }
+    }
+}
+
+/**
+ * @brief TCP → USB bridge task
+ *
+ * Forwards data from TCP to USB serial device
+ */
+static void tcp_to_usb_bridge_task(void *pvParameters)
+{
+    data_buffer_t *buf;
+
+    while (1) {
+        if (xQueueReceive(tcp_to_usb_queue, &buf, portMAX_DELAY) == pdTRUE) {
+            if (current_device != NULL && current_device->state == DEVICE_STATE_OPEN) {
+                esp_err_t err;
+
+                if (current_device->type == DEVICE_TYPE_CDC) {
+                    err = cdc_acm_host_data_tx_blocking(current_device->handle.cdc_hdl,
+                                                         buf->data, buf->len, 1000);
+                } else if (current_device->type == DEVICE_TYPE_FTDI) {
+                    err = ftdi_sio_host_data_tx_blocking(current_device->handle.ftdi_hdl,
+                                                          buf->data, buf->len, 1000);
+                } else {
+                    buffer_free(buf);
+                    continue;
+                }
+
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "USB TX failed: %s", esp_err_to_name(err));
+                }
+            }
+
+            // Free buffer after processing
+            buffer_free(buf);
         }
     }
 }
@@ -173,7 +570,37 @@ static void ftdi_new_device_callback(uint16_t vid, uint16_t pid, void *user_arg)
 static bool cdc_handle_rx(const uint8_t *data, size_t data_len, void *arg)
 {
     ESP_LOGI(TAG, "[CDC] Data received (%d bytes)", data_len);
-    ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
+    //ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
+
+    // Forward data to TCP queue
+    if (usb_to_tcp_queue != NULL) {
+        size_t remaining = data_len;
+        size_t offset = 0;
+
+        while (remaining > 0) {
+            // Allocate buffer from pool
+            data_buffer_t *buf = buffer_alloc();
+            if (buf == NULL) {
+                ESP_LOGW(TAG, "[CDC] No buffer available, data dropped");
+                break;
+            }
+
+            size_t chunk_size = remaining > sizeof(buf->data) ? sizeof(buf->data) : remaining;
+            memcpy(buf->data, data + offset, chunk_size);
+            buf->len = chunk_size;
+
+            // Send buffer pointer to queue
+            if (xQueueSend(usb_to_tcp_queue, &buf, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "[CDC] USB→TCP queue full, data dropped");
+                buffer_free(buf);  // Free buffer if queue is full
+                break;
+            }
+
+            offset += chunk_size;
+            remaining -= chunk_size;
+        }
+    }
+
     return true;  // Data processed
 }
 
@@ -188,6 +615,35 @@ static void ftdi_handle_rx(const uint8_t *data, size_t data_len, void *arg)
 {
     ESP_LOGI(TAG, "[FTDI] Data received (%d bytes)", data_len);
     ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
+
+    // Forward data to TCP queue
+    if (usb_to_tcp_queue != NULL) {
+        size_t remaining = data_len;
+        size_t offset = 0;
+
+        while (remaining > 0) {
+            // Allocate buffer from pool
+            data_buffer_t *buf = buffer_alloc();
+            if (buf == NULL) {
+                ESP_LOGW(TAG, "[FTDI] No buffer available, data dropped");
+                break;
+            }
+
+            size_t chunk_size = remaining > sizeof(buf->data) ? sizeof(buf->data) : remaining;
+            memcpy(buf->data, data + offset, chunk_size);
+            buf->len = chunk_size;
+
+            // Send buffer pointer to queue
+            if (xQueueSend(usb_to_tcp_queue, &buf, 0) != pdTRUE) {
+                ESP_LOGW(TAG, "[FTDI] USB→TCP queue full, data dropped");
+                buffer_free(buf);  // Free buffer if queue is full
+                break;
+            }
+
+            offset += chunk_size;
+            remaining -= chunk_size;
+        }
+    }
 }
 
 /**
@@ -408,6 +864,9 @@ static void handle_device(device_info_t *dev_info)
         return;
     }
 
+    // Set current device pointer for bridge tasks
+    current_device = dev_info;
+
     // Dispatch to appropriate handler
     if (dev_info->type == DEVICE_TYPE_CDC) {
         handle_cdc_device(dev_info);
@@ -415,6 +874,7 @@ static void handle_device(device_info_t *dev_info)
         handle_ftdi_device(dev_info);
     } else {
         ESP_LOGE(TAG, "Unknown device type: %d", dev_info->type);
+        current_device = NULL;
         vSemaphoreDelete(dev_info->disconnected_sem);
         return;
     }
@@ -423,6 +883,9 @@ static void handle_device(device_info_t *dev_info)
     ESP_LOGI(TAG, "Waiting for device disconnection...");
     xSemaphoreTake(dev_info->disconnected_sem, portMAX_DELAY);
     vSemaphoreDelete(dev_info->disconnected_sem);
+
+    // Clear current device pointer
+    current_device = NULL;
 
     ESP_LOGI(TAG, "Device disconnected, ready for next device");
 }
@@ -433,17 +896,79 @@ static void handle_device(device_info_t *dev_info)
  * @brief Main application
  *
  * Installs both CDC-ACM and FTDI drivers and automatically handles devices
- * based on their VID/PID.
+ * based on their VID/PID. Also sets up WiFi and TCP server for network bridging.
  */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "USB Serial Auto-Detection Example");
-    ESP_LOGI(TAG, "Installing both CDC-ACM and FTDI drivers...");
+    ESP_LOGI(TAG, "USB Serial to TCP Bridge");
+    ESP_LOGI(TAG, "Initializing WiFi...");
 
-    // Create device queue
+    // Initialize WiFi
+    wifi_init_sta();
+
+    // Wait for WiFi connection
+    ESP_LOGI(TAG, "Waiting for WiFi connection...");
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                            pdFALSE,
+                                            pdFALSE,
+                                            portMAX_DELAY);
+
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "Connected to WiFi SSID: %s", CONFIG_WIFI_SSID);
+    } else if (bits & WIFI_FAIL_BIT) {
+        ESP_LOGE(TAG, "Failed to connect to SSID: %s", CONFIG_WIFI_SSID);
+        return;
+    } else {
+        ESP_LOGE(TAG, "Unexpected event");
+        return;
+    }
+
+    // Initialize buffer pool
+    ESP_LOGI(TAG, "Initializing buffer pool...");
+    buffer_pool_init();
+
+    // Create queues for data bridging (stores buffer pointers)
+    ESP_LOGI(TAG, "Creating data queues...");
+    usb_to_tcp_queue = xQueueCreate(8, sizeof(data_buffer_t*));
+    tcp_to_usb_queue = xQueueCreate(8, sizeof(data_buffer_t*));
     device_queue = xQueueCreate(4, sizeof(device_info_t));
-    if (device_queue == NULL) {
-        ESP_LOGE(TAG, "Failed to create device queue");
+
+    if (usb_to_tcp_queue == NULL || tcp_to_usb_queue == NULL || device_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create queues");
+        return;
+    }
+
+    // Create TCP server mutex
+    tcp_server.tx_mutex = xSemaphoreCreateMutex();
+    if (tcp_server.tx_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create TCP TX mutex");
+        return;
+    }
+
+    // Initialize TCP server state
+    tcp_server.client_sock = -1;
+    tcp_server.connected = false;
+
+    // Start TCP server task
+    ESP_LOGI(TAG, "Starting TCP server on port %d...", CONFIG_TCP_SERVER_PORT);
+    BaseType_t task_created = xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
+    if (task_created != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to create TCP server task");
+        return;
+    }
+
+    // Start bridge tasks
+    ESP_LOGI(TAG, "Starting bridge tasks...");
+    task_created = xTaskCreate(usb_to_tcp_bridge_task, "usb_to_tcp", 4096, NULL, 6, NULL);
+    if (task_created != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to create USB→TCP bridge task");
+        return;
+    }
+
+    task_created = xTaskCreate(tcp_to_usb_bridge_task, "tcp_to_usb", 4096, NULL, 6, NULL);
+    if (task_created != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to create TCP→USB bridge task");
         return;
     }
 
@@ -456,7 +981,7 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_host_install(&host_config));
 
     // Create USB library handling task
-    BaseType_t task_created = xTaskCreate(usb_lib_task, "usb_lib", 4096, NULL, EXAMPLE_USB_HOST_PRIORITY, NULL);
+    task_created = xTaskCreate(usb_lib_task, "usb_lib", 4096, NULL, EXAMPLE_USB_HOST_PRIORITY, NULL);
     if (task_created != pdTRUE) {
         ESP_LOGE(TAG, "Failed to create USB library task");
         return;
@@ -479,7 +1004,7 @@ void app_main(void)
     ftdi_config.user_arg = NULL;
     ESP_ERROR_CHECK(ftdi_sio_host_install(&ftdi_config));
 
-    ESP_LOGI(TAG, "Both drivers installed. Waiting for USB devices...");
+    ESP_LOGI(TAG, "All systems initialized. Waiting for USB devices...");
 
     // Main device handling loop
     while (true) {
