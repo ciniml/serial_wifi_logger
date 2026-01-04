@@ -1,0 +1,30 @@
+menu "USB Serial Configuration"
+
+    choice USB_SERIAL_DRIVER
+        prompt "USB Serial Driver Type"
+        default USB_SERIAL_DRIVER_CDC
+        help
+            Select the USB serial driver type to use.
+
+        config USB_SERIAL_DRIVER_CDC
+            bool "CDC-ACM Driver"
+            help
+                Use USB CDC-ACM driver for serial communication.
+
+        config USB_SERIAL_DRIVER_FTDI
+            bool "FTDI Driver"
+            select USB_HOST_ENABLE_FTDI_SIO_DRIVER
+            help
+                Use FTDI driver for serial communication.
+
+        config USB_SERIAL_DRIVER_AUTO
+            bool "Auto-Detect (Both Drivers)"
+            select USB_HOST_ENABLE_FTDI_SIO_DRIVER
+            help
+                Automatically detect and use the appropriate driver
+                based on USB device VID/PID. Both CDC-ACM and FTDI
+                drivers will be installed and the application will
+                automatically switch between them at runtime.
+    endchoice
+
+endmenu
