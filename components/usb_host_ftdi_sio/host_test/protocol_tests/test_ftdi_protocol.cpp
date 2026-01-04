@@ -129,24 +129,29 @@ TEST_CASE("FTDI Protocol - Baud Rate Calculation (FT232R)", "[ftdi_protocol]")
 
     SECTION("9600 baud") {
         REQUIRE(ftdi_calculate_baudrate_divisor(9600, FTDI_CHIP_TYPE_232R, &value, &index) == ESP_OK);
-        // 3000000 / 9600 = 312.5 -> divisor = 312.5 * 8 = 2500
-        // Expected: value = 2500 & 0xFFFF = 2500, index = 0
-        REQUIRE(value == 2500);
+        // 3000000 / 9600 = 312.5 -> divisor_raw = 2500 (312.5 * 8)
+        // integral = 312, fractional = 4 (.500) -> encoded as 0b001 << 14
+        // divisor_encoded = 312 | (1 << 14) = 16696
+        REQUIRE(value == 16696);
         REQUIRE(index == 0);
     }
 
     SECTION("115200 baud") {
         REQUIRE(ftdi_calculate_baudrate_divisor(115200, FTDI_CHIP_TYPE_232R, &value, &index) == ESP_OK);
-        // 3000000 / 115200 = 26.04... -> divisor ~= 208
-        // This is an approximation test
-        REQUIRE(value > 200);
-        REQUIRE(value < 220);
+        // 3000000 / 115200 = 26.04... -> divisor_raw = 208
+        // integral = 26, fractional = 0 (.000)
+        // divisor_encoded = 26 | (0 << 14) = 26
+        REQUIRE(value == 26);
+        REQUIRE(index == 0);
     }
 
     SECTION("19200 baud") {
         REQUIRE(ftdi_calculate_baudrate_divisor(19200, FTDI_CHIP_TYPE_232R, &value, &index) == ESP_OK);
-        // 3000000 / 19200 = 156.25 -> divisor = 1250
-        REQUIRE(value == 1250);
+        // 3000000 / 19200 = 156.25 -> divisor_raw = 1250
+        // integral = 156, fractional = 2 (.250) -> encoded as 0b010 << 14
+        // divisor_encoded = 156 | (2 << 14) = 32924
+        REQUIRE(value == 32924);
+        REQUIRE(index == 0);
     }
 
     SECTION("300 baud (minimum)") {
@@ -157,9 +162,11 @@ TEST_CASE("FTDI Protocol - Baud Rate Calculation (FT232R)", "[ftdi_protocol]")
 
     SECTION("921600 baud (high speed)") {
         REQUIRE(ftdi_calculate_baudrate_divisor(921600, FTDI_CHIP_TYPE_232R, &value, &index) == ESP_OK);
-        // 3000000 / 921600 = 3.255... -> divisor ~= 26
-        REQUIRE(value > 20);
-        REQUIRE(value < 30);
+        // 3000000 / 921600 = 3.255... -> divisor_raw = 26
+        // integral = 3, fractional = 2 (.250) -> encoded as 0b010 << 14
+        // divisor_encoded = 3 | (2 << 14) = 32771
+        REQUIRE(value == 32771);
+        REQUIRE(index == 0);
     }
 
     SECTION("Invalid baud rate (too low)") {
