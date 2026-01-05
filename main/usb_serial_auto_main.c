@@ -37,6 +37,9 @@
 #include "lwip/netdb.h"
 #include "esp_netif.h"
 
+// Provisioning
+#include "provisioning.h"
+
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
 #define EXAMPLE_TX_STRING           ("Auto-detect test string!")
 #define EXAMPLE_TX_TIMEOUT_MS       (1000)
@@ -105,6 +108,8 @@ static buffer_pool_t buffer_pool;  // Static buffer pool
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+#define PROV_SUCCESS_BIT   BIT2
+#define PROV_FAIL_BIT      BIT3
 
 // ============= FORWARD DECLARATIONS =============
 
@@ -112,7 +117,7 @@ static buffer_pool_t buffer_pool;  // Static buffer pool
 static void usb_lib_task(void *arg);
 static void cdc_new_device_callback(usb_device_handle_t usb_dev);
 static void ftdi_new_device_callback(uint16_t vid, uint16_t pid, void *user_arg);
-static bool cdc_handle_rx(const uint8_t *data, size_t data_len, void *arg);
+static void cdc_handle_rx(uint8_t *data, size_t data_len, void *arg);
 static void ftdi_handle_rx(const uint8_t *data, size_t data_len, void *arg);
 static void cdc_handle_event(const cdc_acm_host_dev_event_data_t *event, void *user_ctx);
 static void ftdi_handle_event(ftdi_sio_host_dev_event_t event, void *user_ctx);
@@ -126,8 +131,6 @@ static data_buffer_t* buffer_alloc(void);
 static void buffer_free(data_buffer_t *buf);
 
 // WiFi and TCP functions
-static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
-static void wifi_init_sta(void);
 static void tcp_server_task(void *pvParameters);
 static void usb_to_tcp_bridge_task(void *pvParameters);
 static void tcp_to_usb_bridge_task(void *pvParameters);
@@ -232,8 +235,10 @@ static void buffer_free(data_buffer_t *buf)
 
 // ============= WIFI INITIALIZATION =============
 
+// ============= WIFI EVENT HANDLER =============
+
 /**
- * @brief WiFi event handler
+ * @brief WiFi event handler for STA connection
  */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -254,67 +259,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         s_retry_num = 0;
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
     }
-}
-
-/**
- * @brief Initialize WiFi station mode
- */
-static void wifi_init_sta(void)
-{
-    // Initialize NVS
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    // Create event group
-    wifi_event_group = xEventGroupCreate();
-
-    // Initialize TCP/IP stack
-    ESP_ERROR_CHECK(esp_netif_init());
-
-    // Create default event loop
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-    // Create default WiFi STA interface
-    esp_netif_create_default_wifi_sta();
-
-    // Initialize WiFi with default config
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    // Register event handlers
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
-                                                          ESP_EVENT_ANY_ID,
-                                                          &wifi_event_handler,
-                                                          NULL,
-                                                          NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                          IP_EVENT_STA_GOT_IP,
-                                                          &wifi_event_handler,
-                                                          NULL,
-                                                          NULL));
-
-    // Configure WiFi
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = CONFIG_WIFI_SSID,
-            .password = CONFIG_WIFI_PASSWORD,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-            .pmf_cfg = {
-                .capable = true,
-                .required = false
-            },
-        },
-    };
-
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "WiFi initialization finished");
 }
 
 // ============= TCP SERVER AND BRIDGE TASKS =============
@@ -567,7 +511,7 @@ static void ftdi_new_device_callback(uint16_t vid, uint16_t pid, void *user_arg)
  * @param arg Argument we passed to the device open function (device_info_t*)
  * @return true: data processed, false: expect more data
  */
-static bool cdc_handle_rx(const uint8_t *data, size_t data_len, void *arg)
+static void cdc_handle_rx(uint8_t *data, size_t data_len, void *arg)
 {
     ESP_LOGI(TAG, "[CDC] Data received (%d bytes)", data_len);
     //ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
@@ -601,7 +545,6 @@ static bool cdc_handle_rx(const uint8_t *data, size_t data_len, void *arg)
         }
     }
 
-    return true;  // Data processed
 }
 
 /**
@@ -614,7 +557,7 @@ static bool cdc_handle_rx(const uint8_t *data, size_t data_len, void *arg)
 static void ftdi_handle_rx(const uint8_t *data, size_t data_len, void *arg)
 {
     ESP_LOGI(TAG, "[FTDI] Data received (%d bytes)", data_len);
-    ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
+    //ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
 
     // Forward data to TCP queue
     if (usb_to_tcp_queue != NULL) {
@@ -728,7 +671,6 @@ static void handle_cdc_device(device_info_t *dev_info)
     const cdc_acm_host_device_config_t dev_config = {
         .connection_timeout_ms = 1000,
         .out_buffer_size = 512,
-        .in_buffer_size = 512,
         .user_arg = dev_info,  // Pass dev_info for callback access
         .event_cb = cdc_handle_event,
         .data_cb = cdc_handle_rx
@@ -900,27 +842,83 @@ static void handle_device(device_info_t *dev_info)
  */
 void app_main(void)
 {
-    ESP_LOGI(TAG, "USB Serial to TCP Bridge");
-    ESP_LOGI(TAG, "Initializing WiFi...");
+    ESP_LOGI(TAG, "USB Serial to TCP Bridge with Network Provisioning");
 
-    // Initialize WiFi
-    wifi_init_sta();
+    // 1. Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
 
-    // Wait for WiFi connection
+    // 2. Initialize WiFi (required before provisioning check)
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    // 3. Initialize TCP/IP and event loop
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    wifi_event_group = xEventGroupCreate();
+
+    // 4. Initialize provisioning manager
+    ESP_LOGI(TAG, "Initializing provisioning manager...");
+    ESP_ERROR_CHECK(init_provisioning_manager());
+
+    
+
+    // Register WiFi event handlers
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                          ESP_EVENT_ANY_ID,
+                                                          &wifi_event_handler,
+                                                          NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                          IP_EVENT_STA_GOT_IP,
+                                                          &wifi_event_handler,
+                                                          NULL, NULL));
+
+    // 4. Create WiFi STA and AP interface and register event handlers
+    esp_netif_create_default_wifi_sta();
+    esp_netif_create_default_wifi_ap();
+
+    // 5. Check if already provisioned
+    bool provisioned = is_provisioned();
+    ESP_LOGI(TAG, "Provisioning status: %s", provisioned ? "DONE" : "NOT DONE");
+
+    if (!provisioned) {
+        // Not provisioned - start provisioning
+        ESP_LOGI(TAG, "Starting provisioning...");
+        ESP_LOGI(TAG, "Connect to SoftAP (SSID: PROV_xxxxxx) and access provisioning page");
+
+        start_provisioning(&wifi_event_group, PROV_SUCCESS_BIT, PROV_FAIL_BIT);
+
+        // Wait for provisioning to complete
+        EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                                PROV_SUCCESS_BIT | PROV_FAIL_BIT,
+                                                pdTRUE, pdFALSE, portMAX_DELAY);
+
+        if (bits & PROV_FAIL_BIT) {
+            ESP_LOGE(TAG, "Provisioning failed");
+            return;
+        }
+        ESP_LOGI(TAG, "Provisioning successful");
+    }
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_FLASH)); // Auto-load from NVS
+    ESP_ERROR_CHECK(esp_wifi_start());
+
+    // 7. Wait for WiFi connection
     ESP_LOGI(TAG, "Waiting for WiFi connection...");
     EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
                                             WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                            pdFALSE,
-                                            pdFALSE,
-                                            portMAX_DELAY);
+                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
     if (bits & WIFI_CONNECTED_BIT) {
-        ESP_LOGI(TAG, "Connected to WiFi SSID: %s", CONFIG_WIFI_SSID);
-    } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGE(TAG, "Failed to connect to SSID: %s", CONFIG_WIFI_SSID);
-        return;
+        ESP_LOGI(TAG, "Connected to WiFi");
     } else {
-        ESP_LOGE(TAG, "Unexpected event");
+        ESP_LOGE(TAG, "Failed to connect to WiFi");
         return;
     }
 

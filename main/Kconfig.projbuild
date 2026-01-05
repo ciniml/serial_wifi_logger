@@ -54,24 +54,36 @@ menu "TCP Server Configuration"
 
 endmenu
 
-menu "WiFi Configuration"
+menu "Network Provisioning Configuration"
 
-    config WIFI_SSID
-        string "WiFi SSID"
-        default "myssid"
+    choice PROV_SECURITY_VERSION
+        prompt "Provisioning Security Version"
+        default PROV_SECURITY_VERSION_1
         help
-            SSID (network name) to connect to.
+            Network provisioning supports security versions 0, 1, and 2.
 
-    config WIFI_PASSWORD
-        string "WiFi Password"
-        default "mypassword"
+        config PROV_SECURITY_VERSION_0
+            bool "Security Version 0 (Plain text - Testing only)"
+
+        config PROV_SECURITY_VERSION_1
+            bool "Security Version 1 (Proof of Possession)"
+
+        config PROV_SECURITY_VERSION_2
+            bool "Security Version 2 (SRP6a)"
+    endchoice
+
+    config PROV_POP_CODE
+        string "Proof of Possession Code"
+        depends on PROV_SECURITY_VERSION_1
+        default "abcd1234"
         help
-            WiFi password (WPA or WPA2) for the network.
+            PoP (Proof of Possession) code for Security Version 1.
+            This code must be entered during provisioning to authenticate.
 
     config WIFI_MAXIMUM_RETRY
-        int "Maximum retry"
+        int "WiFi connection maximum retry"
         default 5
         help
-            Set the Maximum retry to connect to the WiFi network.
+            Set the maximum retry count for WiFi connection attempts.
 
 endmenu
