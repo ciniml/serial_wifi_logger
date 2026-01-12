@@ -30,6 +30,7 @@
 // WiFi and TCP includes
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_mac.h"
 #include "nvs_flash.h"
 #include "lwip/err.h"
 #include "lwip/sockets.h"
@@ -39,6 +40,9 @@
 
 // Provisioning
 #include "provisioning.h"
+
+// mDNS
+#include "mdns.h"
 
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
 #define EXAMPLE_TX_STRING           ("Auto-detect test string!")
@@ -105,6 +109,7 @@ static device_info_t *current_device = NULL;  // Currently connected USB device
 static EventGroupHandle_t wifi_event_group;
 static int s_retry_num = 0;
 static buffer_pool_t buffer_pool;  // Static buffer pool
+static char mdns_instance_name[32];  // mDNS service instance name
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -134,6 +139,11 @@ static void buffer_free(data_buffer_t *buf);
 static void tcp_server_task(void *pvParameters);
 static void usb_to_tcp_bridge_task(void *pvParameters);
 static void tcp_to_usb_bridge_task(void *pvParameters);
+
+// mDNS functions
+static void init_mdns(void);
+static void update_mdns_usb_status(bool connected, uint16_t vid, uint16_t pid, const char *type);
+static void update_mdns_tcp_status(bool connected);
 
 // ============= USB HOST TASK =============
 
@@ -261,6 +271,103 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
     }
 }
 
+// ============= mDNS FUNCTIONS =============
+
+/**
+ * @brief Initialize mDNS service
+ *
+ * Registers the device as a _serial._tcp service with dynamic TXT records
+ */
+static void init_mdns(void)
+{
+    // Initialize mDNS
+    ESP_ERROR_CHECK(mdns_init());
+
+    // Generate instance name from MAC address
+    uint8_t mac[6];
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    snprintf(mdns_instance_name, sizeof(mdns_instance_name),
+             "serial-%02X%02X%02X", mac[3], mac[4], mac[5]);
+
+    // Set mDNS hostname (appears as serial-XXXXXX.local)
+    ESP_ERROR_CHECK(mdns_hostname_set(mdns_instance_name));
+    ESP_LOGI(TAG, "mDNS hostname set to: %s.local", mdns_instance_name);
+
+    // Get IP address for TXT record
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    esp_netif_ip_info_t ip_info;
+    esp_netif_get_ip_info(netif, &ip_info);
+
+    char ip_str[16];
+    snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ip_info.ip));
+
+    char mac_str[18];
+    snprintf(mac_str, sizeof(mac_str), MACSTR, MAC2STR(mac));
+
+    char port_str[6];
+    snprintf(port_str, sizeof(port_str), "%d", CONFIG_TCP_SERVER_PORT);
+
+    // Initial TXT records
+    mdns_txt_item_t txt_data[] = {
+        {"mac", mac_str},
+        {"ip", ip_str},
+        {"port", port_str},
+        {"usb_connected", "0"},
+        {"tcp_connected", "0"}
+    };
+
+    // Register _serial._tcp service
+    ESP_ERROR_CHECK(mdns_service_add(mdns_instance_name, "_serial", "_tcp",
+                                      CONFIG_TCP_SERVER_PORT, txt_data,
+                                      sizeof(txt_data) / sizeof(txt_data[0])));
+
+    ESP_LOGI(TAG, "mDNS service registered: %s._serial._tcp.local:%d",
+             mdns_instance_name, CONFIG_TCP_SERVER_PORT);
+}
+
+/**
+ * @brief Update mDNS TXT records with USB device status
+ *
+ * @param connected Whether USB device is connected
+ * @param vid USB Vendor ID (ignored if not connected)
+ * @param pid USB Product ID (ignored if not connected)
+ * @param type USB device type string (ignored if not connected)
+ */
+static void update_mdns_usb_status(bool connected, uint16_t vid, uint16_t pid, const char *type)
+{
+    char vid_str[8], pid_str[8];
+
+    mdns_service_txt_item_set("_serial", "_tcp", "usb_connected", connected ? "1" : "0");
+
+    if (connected) {
+        snprintf(vid_str, sizeof(vid_str), "0x%04X", vid);
+        snprintf(pid_str, sizeof(pid_str), "0x%04X", pid);
+
+        mdns_service_txt_item_set("_serial", "_tcp", "usb_vid", vid_str);
+        mdns_service_txt_item_set("_serial", "_tcp", "usb_pid", pid_str);
+        mdns_service_txt_item_set("_serial", "_tcp", "usb_type", type);
+
+        ESP_LOGI(TAG, "mDNS: USB connected (VID=0x%04X, PID=0x%04X, Type=%s)", vid, pid, type);
+    } else {
+        mdns_service_txt_item_remove("_serial", "_tcp", "usb_vid");
+        mdns_service_txt_item_remove("_serial", "_tcp", "usb_pid");
+        mdns_service_txt_item_remove("_serial", "_tcp", "usb_type");
+
+        ESP_LOGI(TAG, "mDNS: USB disconnected");
+    }
+}
+
+/**
+ * @brief Update mDNS TXT records with TCP client status
+ *
+ * @param connected Whether TCP client is connected
+ */
+static void update_mdns_tcp_status(bool connected)
+{
+    mdns_service_txt_item_set("_serial", "_tcp", "tcp_connected", connected ? "1" : "0");
+    ESP_LOGI(TAG, "mDNS: TCP client %s", connected ? "connected" : "disconnected");
+}
+
 // ============= TCP SERVER AND BRIDGE TASKS =============
 
 /**
@@ -332,6 +439,9 @@ static void tcp_server_task(void *pvParameters)
         ESP_LOGI(TAG, "TCP client connected from %s:%d",
                  addr_str, ntohs(source_addr.sin_port));
 
+        // Update mDNS status
+        update_mdns_tcp_status(true);
+
         // Receive loop
         uint8_t rx_buffer[CONFIG_TCP_RX_BUFFER_SIZE];
         while (tcp_server.connected) {
@@ -367,6 +477,9 @@ static void tcp_server_task(void *pvParameters)
         tcp_server.client_sock = -1;
         tcp_server.connected = false;
         ESP_LOGI(TAG, "TCP connection closed");
+
+        // Update mDNS status
+        update_mdns_tcp_status(false);
     }
 }
 
@@ -606,6 +719,8 @@ static void cdc_handle_event(const cdc_acm_host_dev_event_data_t *event, void *u
     case CDC_ACM_HOST_DEVICE_DISCONNECTED:
         ESP_LOGI(TAG, "[CDC] Device disconnected");
         cdc_acm_host_close(event->data.cdc_hdl);
+        // Update mDNS status
+        update_mdns_usb_status(false, 0, 0, NULL);
         xSemaphoreGive(dev_info->disconnected_sem);
         break;
     case CDC_ACM_HOST_SERIAL_STATE:
@@ -637,6 +752,8 @@ static void ftdi_handle_event(ftdi_sio_host_dev_event_t event, void *user_ctx)
         if (dev_info->handle.ftdi_hdl != NULL) {
             ftdi_sio_host_close(dev_info->handle.ftdi_hdl);
         }
+        // Update mDNS status
+        update_mdns_usb_status(false, 0, 0, NULL);
         xSemaphoreGive(dev_info->disconnected_sem);
         break;
     case FTDI_SIO_HOST_MODEM_STATUS:
@@ -684,6 +801,9 @@ static void handle_cdc_device(device_info_t *dev_info)
 
     dev_info->state = DEVICE_STATE_OPEN;
     ESP_LOGI(TAG, "[CDC] Device opened successfully");
+
+    // Update mDNS status
+    update_mdns_usb_status(true, dev_info->vid, dev_info->pid, "CDC");
 
     // Print device descriptor
     cdc_acm_host_desc_print(dev_info->handle.cdc_hdl);
@@ -747,6 +867,9 @@ static void handle_ftdi_device(device_info_t *dev_info)
 
     dev_info->state = DEVICE_STATE_OPEN;
     ESP_LOGI(TAG, "[FTDI] Device opened successfully");
+
+    // Update mDNS status
+    update_mdns_usb_status(true, dev_info->vid, dev_info->pid, "FTDI");
 
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -917,6 +1040,10 @@ void app_main(void)
 
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to WiFi");
+
+        // Initialize mDNS service
+        ESP_LOGI(TAG, "Initializing mDNS service...");
+        init_mdns();
     } else {
         ESP_LOGE(TAG, "Failed to connect to WiFi");
         return;
