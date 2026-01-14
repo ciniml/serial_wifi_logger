@@ -100,10 +100,31 @@ typedef struct {
     SemaphoreHandle_t mutex;
 } buffer_pool_t;
 
+// Control port server
+typedef struct {
+    int listen_sock;
+    int client_sock;
+    bool connected;
+} control_server_t;
+
+// Control command types
+typedef enum {
+    CMD_UNKNOWN,
+    CMD_DTR,
+    CMD_RTS,
+    CMD_BAUD
+} command_type_t;
+
+typedef struct {
+    command_type_t type;
+    int value;
+} parsed_command_t;
+
 // ============= GLOBAL VARIABLES =============
 
 static QueueHandle_t device_queue;
 static tcp_server_t tcp_server;
+static control_server_t control_server;
 static QueueHandle_t usb_to_tcp_queue;  // USB → TCP queue (stores buffer pointers)
 static QueueHandle_t tcp_to_usb_queue;  // TCP → USB queue (stores buffer pointers)
 static device_info_t *current_device = NULL;  // Currently connected USB device
@@ -111,6 +132,7 @@ static EventGroupHandle_t wifi_event_group;
 static int s_retry_num = 0;
 static buffer_pool_t buffer_pool;  // Static buffer pool
 static char mdns_instance_name[32];  // mDNS service instance name
+static SemaphoreHandle_t device_mutex;  // Device mutex for thread-safe access
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -145,6 +167,11 @@ static void tcp_to_usb_bridge_task(void *pvParameters);
 static void init_mdns(void);
 static void update_mdns_usb_status(bool connected, uint16_t vid, uint16_t pid, const char *type);
 static void update_mdns_tcp_status(bool connected);
+
+// Control port functions
+static bool parse_command(const char *cmd_str, parsed_command_t *cmd);
+static esp_err_t execute_command(const parsed_command_t *cmd);
+static void control_server_task(void *pvParameters);
 
 // ============= USB HOST TASK =============
 
@@ -308,11 +335,15 @@ static void init_mdns(void)
     char port_str[6];
     snprintf(port_str, sizeof(port_str), "%d", CONFIG_TCP_SERVER_PORT);
 
+    char control_port_str[6];
+    snprintf(control_port_str, sizeof(control_port_str), "%d", CONFIG_TCP_CONTROL_PORT);
+
     // Initial TXT records
     mdns_txt_item_t txt_data[] = {
         {"mac", mac_str},
         {"ip", ip_str},
         {"port", port_str},
+        {"control_port", control_port_str},
         {"usb_connected", "0"},
         {"tcp_connected", "0"}
     };
@@ -367,6 +398,240 @@ static void update_mdns_tcp_status(bool connected)
 {
     mdns_service_txt_item_set("_serial", "_tcp", "tcp_connected", connected ? "1" : "0");
     ESP_LOGI(TAG, "mDNS: TCP client %s", connected ? "connected" : "disconnected");
+}
+
+// ============= CONTROL PORT FUNCTIONS =============
+
+/**
+ * @brief Parse control command string
+ *
+ * @param cmd_str Command string (e.g., "DTR 1\n")
+ * @param cmd Parsed command output
+ * @return true if parsing succeeded, false otherwise
+ */
+static bool parse_command(const char *cmd_str, parsed_command_t *cmd)
+{
+    // Remove trailing newline
+    char buffer[64];
+    strncpy(buffer, cmd_str, sizeof(buffer) - 1);
+    buffer[sizeof(buffer) - 1] = '\0';
+
+    char *newline = strchr(buffer, '\n');
+    if (newline) *newline = '\0';
+
+    // Parse command
+    char cmd_name[16];
+    int value;
+
+    if (sscanf(buffer, "%15s %d", cmd_name, &value) != 2) {
+        return false;
+    }
+
+    // Identify command type
+    if (strcmp(cmd_name, "DTR") == 0) {
+        cmd->type = CMD_DTR;
+        cmd->value = value;
+        return (value == 0 || value == 1);
+    } else if (strcmp(cmd_name, "RTS") == 0) {
+        cmd->type = CMD_RTS;
+        cmd->value = value;
+        return (value == 0 || value == 1);
+    } else if (strcmp(cmd_name, "BAUD") == 0) {
+        cmd->type = CMD_BAUD;
+        cmd->value = value;
+        // Validate common baudrates
+        return (value >= 300 && value <= 921600);
+    }
+
+    return false;
+}
+
+/**
+ * @brief Execute control command
+ *
+ * @param cmd Parsed command
+ * @return esp_err_t ESP_OK on success
+ */
+static esp_err_t execute_command(const parsed_command_t *cmd)
+{
+    esp_err_t ret = ESP_OK;
+
+    // Acquire device mutex
+    if (xSemaphoreTake(device_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to acquire device mutex");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    // Check if device is connected
+    if (current_device == NULL) {
+        ESP_LOGW(TAG, "No USB device connected");
+        xSemaphoreGive(device_mutex);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    // Static variables to preserve DTR/RTS state
+    static bool current_dtr = false;
+    static bool current_rts = false;
+
+    switch (cmd->type) {
+    case CMD_DTR:
+    case CMD_RTS: {
+        // Update the signal being modified
+        if (cmd->type == CMD_DTR) {
+            current_dtr = (cmd->value == 1);
+        } else {
+            current_rts = (cmd->value == 1);
+        }
+
+        // Apply to device
+        if (current_device->type == DEVICE_TYPE_CDC) {
+            ret = cdc_acm_host_set_control_line_state(
+                current_device->handle.cdc_hdl, current_dtr, current_rts);
+        } else if (current_device->type == DEVICE_TYPE_FTDI) {
+            ret = ftdi_sio_host_set_modem_control(
+                current_device->handle.ftdi_hdl, current_dtr, current_rts);
+        }
+
+        ESP_LOGI(TAG, "Set %s=%d (DTR=%d, RTS=%d): %s",
+                 cmd->type == CMD_DTR ? "DTR" : "RTS", cmd->value,
+                 current_dtr, current_rts,
+                 ret == ESP_OK ? "OK" : "ERROR");
+        break;
+    }
+
+    case CMD_BAUD: {
+        if (current_device->type == DEVICE_TYPE_CDC) {
+            cdc_acm_line_coding_t line_coding;
+            ret = cdc_acm_host_line_coding_get(current_device->handle.cdc_hdl, &line_coding);
+            if (ret == ESP_OK) {
+                line_coding.dwDTERate = cmd->value;
+                ret = cdc_acm_host_line_coding_set(current_device->handle.cdc_hdl, &line_coding);
+            }
+        } else if (current_device->type == DEVICE_TYPE_FTDI) {
+            ret = ftdi_sio_host_set_baudrate(current_device->handle.ftdi_hdl, cmd->value);
+        }
+
+        ESP_LOGI(TAG, "Set BAUD=%d: %s", cmd->value, ret == ESP_OK ? "OK" : "ERROR");
+        break;
+    }
+
+    default:
+        ret = ESP_ERR_INVALID_ARG;
+        break;
+    }
+
+    xSemaphoreGive(device_mutex);
+    return ret;
+}
+
+/**
+ * @brief Control server task
+ *
+ * Listens for control commands on TCP control port
+ */
+static void control_server_task(void *pvParameters)
+{
+    struct sockaddr_in dest_addr;
+    dest_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    dest_addr.sin_family = AF_INET;
+    dest_addr.sin_port = htons(CONFIG_TCP_CONTROL_PORT);
+
+    // Create listening socket
+    control_server.listen_sock = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
+    if (control_server.listen_sock < 0) {
+        ESP_LOGE(TAG, "Unable to create control socket: errno %d", errno);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    int opt = 1;
+    setsockopt(control_server.listen_sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    ESP_LOGI(TAG, "Control server binding to port %d", CONFIG_TCP_CONTROL_PORT);
+    int err = bind(control_server.listen_sock, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
+    if (err != 0) {
+        ESP_LOGE(TAG, "Control socket bind failed: errno %d", errno);
+        close(control_server.listen_sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    err = listen(control_server.listen_sock, 1);
+    if (err != 0) {
+        ESP_LOGE(TAG, "Control socket listen failed: errno %d", errno);
+        close(control_server.listen_sock);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    ESP_LOGI(TAG, "Control server listening on port %d", CONFIG_TCP_CONTROL_PORT);
+
+    while (1) {
+        struct sockaddr_in source_addr;
+        socklen_t addr_len = sizeof(source_addr);
+
+        // Accept new client connection
+        int sock = accept(control_server.listen_sock, (struct sockaddr *)&source_addr, &addr_len);
+        if (sock < 0) {
+            ESP_LOGE(TAG, "Unable to accept control connection: errno %d", errno);
+            continue;
+        }
+
+        // If already connected, close old connection
+        if (control_server.connected && control_server.client_sock >= 0) {
+            ESP_LOGI(TAG, "New control client connecting, closing existing connection");
+            shutdown(control_server.client_sock, SHUT_RDWR);
+            close(control_server.client_sock);
+        }
+
+        // Set up new connection
+        control_server.client_sock = sock;
+        control_server.connected = true;
+
+        char addr_str[16];
+        inet_ntoa_r(source_addr.sin_addr, addr_str, sizeof(addr_str));
+        ESP_LOGI(TAG, "Control client connected from %s:%d",
+                 addr_str, ntohs(source_addr.sin_port));
+
+        // Receive loop
+        char rx_buffer[128];
+        while (control_server.connected) {
+            int len = recv(sock, rx_buffer, sizeof(rx_buffer) - 1, 0);
+
+            if (len < 0) {
+                ESP_LOGE(TAG, "Control recv failed: errno %d", errno);
+                break;
+            } else if (len == 0) {
+                ESP_LOGI(TAG, "Control client disconnected");
+                break;
+            } else {
+                rx_buffer[len] = '\0';
+
+                // Parse command
+                parsed_command_t cmd;
+                if (parse_command(rx_buffer, &cmd)) {
+                    // Execute command
+                    esp_err_t ret = execute_command(&cmd);
+
+                    // Send response
+                    const char *response = (ret == ESP_OK) ? "OK\n" : "ERROR\n";
+                    send(sock, response, strlen(response), 0);
+                } else {
+                    // Invalid command
+                    ESP_LOGW(TAG, "Invalid command: %s", rx_buffer);
+                    const char *response = "ERROR\n";
+                    send(sock, response, strlen(response), 0);
+                }
+            }
+        }
+
+        // Connection closed
+        shutdown(sock, SHUT_RDWR);
+        close(sock);
+        control_server.client_sock = -1;
+        control_server.connected = false;
+        ESP_LOGI(TAG, "Control connection closed");
+    }
 }
 
 // ============= TCP SERVER AND BRIDGE TASKS =============
@@ -784,6 +1049,9 @@ static void ftdi_handle_event(ftdi_sio_host_dev_event_t event, void *user_ctx)
  */
 static void handle_cdc_device(device_info_t *dev_info)
 {
+    // Acquire device mutex for exclusive access
+    xSemaphoreTake(device_mutex, portMAX_DELAY);
+
     ESP_LOGI(TAG, "Opening CDC-ACM device (VID=0x%04X, PID=0x%04X)", dev_info->vid, dev_info->pid);
 
     const cdc_acm_host_device_config_t dev_config = {
@@ -797,6 +1065,7 @@ static void handle_cdc_device(device_info_t *dev_info)
     esp_err_t err = cdc_acm_host_open(dev_info->vid, dev_info->pid, 0, &dev_config, &dev_info->handle.cdc_hdl);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open CDC device: %s", esp_err_to_name(err));
+        xSemaphoreGive(device_mutex);
         return;
     }
 
@@ -842,6 +1111,9 @@ static void handle_cdc_device(device_info_t *dev_info)
     ESP_LOGI(TAG, "[CDC] Control line state set: DTR=1, RTS=0");
 
     ESP_LOGI(TAG, "[CDC] Example finished successfully! Waiting for disconnection...");
+
+    // Release device mutex
+    xSemaphoreGive(device_mutex);
 }
 
 /**
@@ -853,6 +1125,9 @@ static void handle_cdc_device(device_info_t *dev_info)
  */
 static void handle_ftdi_device(device_info_t *dev_info)
 {
+    // Acquire device mutex for exclusive access
+    xSemaphoreTake(device_mutex, portMAX_DELAY);
+
     ESP_LOGI(TAG, "Opening FTDI device (VID=0x%04X, PID=0x%04X)", dev_info->vid, dev_info->pid);
 
     ftdi_sio_host_device_config_t dev_config = FTDI_SIO_HOST_DEVICE_CONFIG_DEFAULT();
@@ -863,6 +1138,7 @@ static void handle_ftdi_device(device_info_t *dev_info)
     esp_err_t err = ftdi_sio_host_open(dev_info->vid, dev_info->pid, 0, &dev_config, &dev_info->handle.ftdi_hdl);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open FTDI device: %s", esp_err_to_name(err));
+        xSemaphoreGive(device_mutex);
         return;
     }
 
@@ -912,6 +1188,9 @@ static void handle_ftdi_device(device_info_t *dev_info)
     ESP_LOGI(TAG, "[FTDI] Latency timer set to 16ms");
 
     ESP_LOGI(TAG, "[FTDI] Example finished successfully! Waiting for disconnection...");
+
+    // Release device mutex
+    xSemaphoreGive(device_mutex);
 }
 
 /**
@@ -1072,15 +1351,34 @@ void app_main(void)
         return;
     }
 
+    // Create device mutex for thread-safe access
+    device_mutex = xSemaphoreCreateMutex();
+    if (device_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create device mutex");
+        return;
+    }
+
     // Initialize TCP server state
     tcp_server.client_sock = -1;
     tcp_server.connected = false;
+
+    // Initialize control server state
+    control_server.client_sock = -1;
+    control_server.connected = false;
 
     // Start TCP server task
     ESP_LOGI(TAG, "Starting TCP server on port %d...", CONFIG_TCP_SERVER_PORT);
     BaseType_t task_created = xTaskCreate(tcp_server_task, "tcp_server", 4096, NULL, 5, NULL);
     if (task_created != pdTRUE) {
         ESP_LOGE(TAG, "Failed to create TCP server task");
+        return;
+    }
+
+    // Start control server task
+    ESP_LOGI(TAG, "Starting control server on port %d...", CONFIG_TCP_CONTROL_PORT);
+    task_created = xTaskCreate(control_server_task, "control_server", 4096, NULL, 5, NULL);
+    if (task_created != pdTRUE) {
+        ESP_LOGE(TAG, "Failed to create control server task");
         return;
     }
 

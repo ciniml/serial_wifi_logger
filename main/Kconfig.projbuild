@@ -32,11 +32,19 @@ endmenu
 menu "TCP Server Configuration"
 
     config TCP_SERVER_PORT
-        int "TCP Server Port"
+        int "TCP Data Port"
         range 1 65535
         default 8888
         help
-            Port number for the TCP server to listen on.
+            Port number for the TCP data server.
+
+    config TCP_CONTROL_PORT
+        int "TCP Control Port"
+        range 1 65535
+        default 8889
+        help
+            Port number for the TCP control server.
+            Used for serial port control (DTR/RTS, baudrate).
 
     config TCP_RX_BUFFER_SIZE
         int "TCP RX Buffer Size"

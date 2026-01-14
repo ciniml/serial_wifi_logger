@@ -21,9 +21,11 @@ Serial WiFi Loggerは、ESP32-S3のUSB OTG機能を使用してUSBシリアル�
 - **設定保存**: WiFi接続情報はNVSに永続的に保存
 
 ### 3. TCP サーバー機能
-- **ポート**: 8888番 (変更可能)
-- **接続管理**: 1クライアント接続をサポート
+- **データポート**: 8888番 (変更可能)
+- **制御ポート**: 8889番 (変更可能)
+- **接続管理**: 各ポートで1クライアント接続をサポート
 - **双方向通信**: USB ↔ TCP 間でリアルタイムデータ転送
+- **シリアルポート制御**: DTR/RTS信号、ボーレート設定を制御ポート経由で制御可能
 
 ### 4. mDNS サービスディスカバリ
 - **自動アドバタイズ**: ネットワーク上でデバイスを自動検出可能
@@ -114,9 +116,9 @@ $ avahi-browse -rt _serial._tcp
 **Windows:**
 - Bonjour Browserなどのツールを使用
 
-### 2. TCPで接続
+### 2. データポートへの接続
 
-検出したIPアドレスとポート8888に接続:
+検出したIPアドレスとポート8888に接続してデータ通信:
 
 ```bash
 # telnet で接続
@@ -135,7 +137,49 @@ print(s.recv(1024))
 "
 ```
 
-### 3. USBシリアルデバイスの接続
+### 3. 制御ポートでのシリアルポート制御
+
+制御ポート（8889番）に接続してDTR/RTS信号やボーレートを制御:
+
+```bash
+# 制御ポートに接続
+telnet <IP_ADDRESS> 8889
+
+# DTRを1に設定（HIGH）
+DTR 1
+# 応答: OK
+
+# DTRを0に設定（LOW）
+DTR 0
+# 応答: OK
+
+# RTSを1に設定（HIGH）
+RTS 1
+# 応答: OK
+
+# RTSを0に設定（LOW）
+RTS 0
+# 応答: OK
+
+# ボーレートを9600bpsに設定
+BAUD 9600
+# 応答: OK
+
+# ボーレートを115200bpsに設定
+BAUD 115200
+# 応答: OK
+```
+
+**対応コマンド:**
+- `DTR 0` / `DTR 1` - DTR信号の制御
+- `RTS 0` / `RTS 1` - RTS信号の制御
+- `BAUD <baudrate>` - ボーレート設定（300～921600bps）
+
+**応答:**
+- `OK` - コマンド成功
+- `ERROR` - コマンド失敗（USBデバイス未接続、無効なコマンドなど）
+
+### 4. USBシリアルデバイスの接続
 
 1. USBシリアルデバイスをESP32-S3のUSBポートに接続
 2. デバイスが自動的に検出され、ドライバが選択されます
@@ -149,7 +193,8 @@ print(s.recv(1024))
 |-----|------|---|
 | `mac` | デバイスMACアドレス | `AA:BB:CC:DD:EE:FF` |
 | `ip` | デバイスIPアドレス | `192.168.1.100` |
-| `port` | TCPポート番号 | `8888` |
+| `port` | TCPデータポート番号 | `8888` |
+| `control_port` | TCP制御ポート番号 | `8889` |
 | `usb_connected` | USB接続状態 | `0` / `1` |
 | `usb_vid` | USB Vendor ID (接続時のみ) | `0x0403` |
 | `usb_pid` | USB Product ID (接続時のみ) | `0x6001` |
@@ -173,9 +218,11 @@ print(s.recv(1024))
 
 ### TCP ポート番号の変更
 
-`idf.py menuconfig` → `Component config` → `Example Configuration` → `TCP Server Port`
+`idf.py menuconfig` → `TCP Server Configuration`
 
-デフォルト: 8888
+- **TCP Data Port**: データポート番号（デフォルト: 8888）
+- **TCP Control Port**: 制御ポート番号（デフォルト: 8889）
+- **TCP RX Buffer Size**: TCP受信バッファサイズ（デフォルト: 512バイト）
 
 ### WiFi 再試行回数の変更
 
