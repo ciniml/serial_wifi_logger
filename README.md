@@ -1,243 +1,264 @@
-| Supported Targets | ESP32-S3 |
-| ----------------- | -------- |
+# Serial WiFi Logger
 
-# USB Serial Host Driver with Auto-Detection
+| 対応ターゲット | ESP32-S3 |
+| ------------- | -------- |
 
-This project demonstrates USB serial communication on ESP32-S3 with support for both CDC-ACM and FTDI devices. The application can automatically detect and switch between different USB serial devices at runtime based on their VID/PID.
+## 概要
 
-## Features
+Serial WiFi Loggerは、ESP32-S3のUSB OTG機能を使用してUSBシリアルデバイスをネットワーク経由で利用可能にするファームウェアです。USB CDC-ACMデバイスとFTDIデバイスの両方に対応し、TCPソケット経由でシリアル通信を提供します。
 
-- **CDC-ACM Driver Support**: Standard USB Communications Device Class for serial devices
-- **FTDI Driver Support**: FTDI-specific USB-to-serial chips (FT232R, FT2232, etc.)
-- **Automatic Device Detection**: Runtime detection and driver selection based on USB VID/PID
-- **Three Operating Modes**:
-  - **CDC-ACM Only**: Use only the CDC-ACM driver
-  - **FTDI Only**: Use only the FTDI driver
-  - **Auto-Detect**: Both drivers installed, automatic switching based on connected device
+## 主な機能
 
-## How Auto-Detection Works
+### 1. USB シリアルホスト機能
+- **CDC-ACM対応**: 標準USB通信デバイスクラスのシリアルデバイスに対応
+- **FTDI対応**: FTDI製USB-シリアル変換チップ (FT232R, FT2232など) に対応
+- **自動検出**: USB VID/PIDに基づいてドライバを自動選択
+- **データ転送**: USB → TCP、TCP → USB の双方向データブリッジ
 
-The auto-detection mechanism uses VID-based device classification:
+### 2. WiFi ネットワークプロビジョニング
+- **SoftAP方式**: 初回起動時にアクセスポイントを立ち上げ
+- **自動接続**: 設定後は保存されたWiFi情報で自動接続
+- **設定保存**: WiFi接続情報はNVSに永続的に保存
 
-- **FTDI Devices**: VID = `0x0403` (standard FTDI Vendor ID)
-  - Automatically handled by FTDI driver
-  - Supports FT232R, FT2232H, FT4232H, FT232H, and other FTDI chips
+### 3. TCP サーバー機能
+- **ポート**: 8888番 (変更可能)
+- **接続管理**: 1クライアント接続をサポート
+- **双方向通信**: USB ↔ TCP 間でリアルタイムデータ転送
 
-- **CDC Devices**: All other VIDs
-  - Handled by CDC-ACM driver
-  - Supports standard CDC-ACM compatible devices
+### 4. mDNS サービスディスカバリ
+- **自動アドバタイズ**: ネットワーク上でデバイスを自動検出可能
+- **サービス名**: `serial-XXXXXX._serial._tcp.local` (XXXXXXはMACアドレスの下位3バイト)
+- **動的TXTレコード**: USB接続状態、TCP接続状態、デバイス情報をリアルタイム更新
 
-When a USB device is connected:
-1. Both drivers receive new device notifications
-2. Each driver checks the device VID/PID
-3. The FTDI driver handles devices with VID `0x0403`
-4. The CDC driver handles all other devices
-5. The application automatically uses the appropriate driver
+## 必要なハードウェア
 
-## Hardware Required
+- **ESP32-S3 開発ボード** (USB OTG対応)
+- **USB ケーブル** (プログラミング・モニタリング用)
+- **USB シリアルデバイス**:
+  - CDC-ACMデバイス (別のESP32-S3、Arduinoなど)
+  - FTDIデバイス (FT232R USB-シリアル変換アダプタなど)
 
-- **ESP32-S3 Development Board** with USB OTG support
-- **USB Cable** for connecting to PC (programming and monitoring)
-- **USB Serial Device** (one or more):
-  - CDC-ACM device (e.g., another ESP32-S3 running TinyUSB CDC example)
-  - FTDI device (e.g., FT232R USB-to-serial adapter)
+### ピン配置
 
-### Pin Assignment
+ESP32-S3は内部USB OTGピンを使用:
+- **GPIO 19**: USB D- (データ線負極)
+- **GPIO 20**: USB D+ (データ線正極)
 
-The ESP32-S3 uses internal USB OTG pins:
-- **GPIO 19**: USB D- (negative data line)
-- **GPIO 20**: USB D+ (positive data line)
+外部ピン設定は不要です。
 
-No external pin configuration required for USB OTG.
+## ビルドとフラッシュ
 
-## Build and Flash
-
-### 1. Configure the Project
-
-Select the desired USB serial driver mode:
-
-```bash
-idf.py menuconfig
-```
-
-Navigate to: **USB Serial Configuration → USB Serial Driver Type**
-
-Choose one of:
-- **CDC-ACM Driver**: Use only CDC-ACM driver
-- **FTDI Driver**: Use only FTDI driver
-- **Auto-Detect (Both Drivers)**: Recommended - automatically switch between drivers
-
-### 2. Build the Project
+### 1. プロジェクトのビルド
 
 ```bash
 idf.py build
 ```
 
-### 3. Flash to ESP32-S3
+### 2. ESP32-S3へのフラッシュ
 
 ```bash
 idf.py -p PORT flash monitor
 ```
 
-Replace `PORT` with your serial port (e.g., `/dev/ttyUSB0` on Linux, `COM3` on Windows).
+`PORT`をシリアルポートに置き換えてください (例: Linux では `/dev/ttyUSB0`, Windows では `COM3`)。
 
-To exit the serial monitor, type `Ctrl-]`.
+シリアルモニタを終了するには `Ctrl-]` を入力してください。
 
-## Example Output
+## 初回セットアップ
 
-### CDC-ACM Device Connected
+### WiFi プロビジョニング
 
-```
-I (256) USB-SERIAL-AUTO: USB Host installed
-I (256) USB-SERIAL-AUTO: CDC-ACM driver installed
-I (256) USB-SERIAL-AUTO: FTDI driver installed
-I (356) USB-SERIAL-AUTO: CDC device detected: VID=0x303A PID=0x4001
-I (456) USB-SERIAL-AUTO: Opening CDC device 0x303A:0x4001
-I (556) USB-SERIAL-AUTO: [CDC] Device opened successfully
-I (656) USB-SERIAL-AUTO: [CDC] Setting line coding: 115200 8N1
-I (756) USB-SERIAL-AUTO: [CDC] Data received (3 bytes)
-I (756) USB-SERIAL-AUTO: 41 54 0d                                          |AT.|
-```
+1. ファームウェア書き込み後、デバイスはSoftAPモードで起動します
+2. SSID `PROV_XXXXXX` のWi-Fiアクセスポイントが表示されます
+3. スマートフォンまたはPCでこのアクセスポイントに接続
+4. ブラウザで `192.168.4.1` にアクセス
+5. 接続先のWi-Fi SSID とパスワードを入力
+6. デバイスが設定されたWi-Fiに接続し、以降は自動的に接続されます
 
-### FTDI Device Connected
-
-```
-I (256) USB-SERIAL-AUTO: USB Host installed
-I (256) USB-SERIAL-AUTO: CDC-ACM driver installed
-I (256) USB-SERIAL-AUTO: FTDI driver installed
-I (356) USB-SERIAL-AUTO: FTDI device detected: VID=0x0403 PID=0x6001
-I (456) USB-SERIAL-AUTO: Opening FTDI device 0x0403:0x6001
-I (556) USB-SERIAL-AUTO: [FTDI] Device opened successfully
-I (656) USB-SERIAL-AUTO: [FTDI] Device type: FT232R
-I (756) USB-SERIAL-AUTO: [FTDI] Setting baudrate: 115200
-I (856) USB-SERIAL-AUTO: [FTDI] Setting line property: 8N1
-I (956) USB-SERIAL-AUTO: [FTDI] Data received (3 bytes)
-I (956) USB-SERIAL-AUTO: 41 54 0d                                          |AT.|
+プロビジョニング情報をリセットするには:
+```bash
+idf.py erase-flash
 ```
 
-### Device Switching
+## 使用方法
 
-You can connect and disconnect different USB serial devices, and the application will automatically:
-1. Detect the device type (CDC or FTDI)
-2. Open the device with the appropriate driver
-3. Configure serial parameters (baudrate, data bits, parity, stop bits)
-4. Receive and display data
-5. Close the device when disconnected
-6. Wait for the next device
+### 1. デバイスの検出
 
-## Architecture
+WiFi接続後、mDNSでデバイスを検出できます:
 
-### Application Structure
+**macOS/Linux:**
+```bash
+# サービス一覧を表示
+dns-sd -B _serial._tcp
 
-```
-usb_serial_auto_main.c (Auto-Detect Mode)
-├── USB Host Library (shared by both drivers)
-├── CDC-ACM Host Driver
-│   ├── new_dev_cb: Detects non-FTDI devices (VID != 0x0403)
-│   ├── data_cb: Receives data from CDC devices
-│   └── event_cb: Handles CDC device events
-└── FTDI Host Driver
-    ├── new_dev_cb: Detects FTDI devices (VID == 0x0403)
-    ├── data_cb: Receives data from FTDI devices
-    └── event_cb: Handles FTDI device events
+# 詳細情報を表示
+dns-sd -L serial-XXXXXX _serial._tcp
 ```
 
-### Device Queue Mechanism
+または
 
-The application uses a FreeRTOS queue to manage device detection:
-1. Both drivers register `new_dev_cb` callbacks
-2. When a device is detected, the appropriate driver adds it to the queue
-3. The main task dequeues devices and handles them sequentially
-4. Each device gets a semaphore for disconnection signaling
+```bash
+avahi-browse -r _serial._tcp
+```
 
-### Callback Wrapper Functions
+```
+$ avahi-browse -rt _serial._tcp
++ enp5s0 IPv4 serial-A02048                                 _serial._tcp         local
+= enp5s0 IPv4 serial-A02048                                 _serial._tcp         local
+   hostname = [serial-A02048.local]
+   address = [192.168.2.125]
+   port = [8888]
+   txt = ["mac=f4:12:fa:a0:20:48" "ip=192.168.2.125" "port=8888" "usb_connected=1" "tcp_connected=0" "usb_vid=0x0403" "usb_pid=0x6015" "usb_type=FTDI"]
+```
 
-CDC and FTDI drivers have incompatible callback signatures:
-- **CDC data callback**: Returns `bool` (data processed indicator)
-- **FTDI data callback**: Returns `void`
-- **CDC event callback**: Receives `cdc_acm_host_dev_event_data_t *`
-- **FTDI event callback**: Receives `ftdi_sio_host_dev_event_t` enum
+**Windows:**
+- Bonjour Browserなどのツールを使用
 
-The application implements 4 separate wrapper functions to handle these differences.
+### 2. TCPで接続
 
-## Components
+検出したIPアドレスとポート8888に接続:
+
+```bash
+# telnet で接続
+telnet <IP_ADDRESS> 8888
+
+# nc (netcat) で接続
+nc <IP_ADDRESS> 8888
+
+# Python での接続例
+python3 -c "
+import socket
+s = socket.socket()
+s.connect(('IP_ADDRESS', 8888))
+s.send(b'Hello\\n')
+print(s.recv(1024))
+"
+```
+
+### 3. USBシリアルデバイスの接続
+
+1. USBシリアルデバイスをESP32-S3のUSBポートに接続
+2. デバイスが自動的に検出され、ドライバが選択されます
+3. TCP接続が確立されていれば、即座にデータ通信が可能になります
+
+## mDNS TXTレコード
+
+以下の情報がmDNS TXTレコードとして公開されます:
+
+| キー | 説明 | 例 |
+|-----|------|---|
+| `mac` | デバイスMACアドレス | `AA:BB:CC:DD:EE:FF` |
+| `ip` | デバイスIPアドレス | `192.168.1.100` |
+| `port` | TCPポート番号 | `8888` |
+| `usb_connected` | USB接続状態 | `0` / `1` |
+| `usb_vid` | USB Vendor ID (接続時のみ) | `0x0403` |
+| `usb_pid` | USB Product ID (接続時のみ) | `0x6001` |
+| `usb_type` | USBドライバタイプ (接続時のみ) | `CDC` / `FTDI` |
+| `tcp_connected` | TCPクライアント接続状態 | `0` / `1` |
+
+## 対応デバイス
+
+### CDC-ACMデバイス
+- ESP32-S3 (TinyUSB CDC)
+- CDC-ACMプロトコルを実装したUSBデバイス全般
+
+### FTDIデバイス
+- FT232R (シングルポート)
+- FT2232H (デュアルポート)
+- FT4232H (クアッドポート)
+- FT232H (高速シングルポート)
+- VID `0x0403` を持つ他のFTDIチップ
+
+## 設定
+
+### TCP ポート番号の変更
+
+`idf.py menuconfig` → `Component config` → `Example Configuration` → `TCP Server Port`
+
+デフォルト: 8888
+
+### WiFi 再試行回数の変更
+
+`idf.py menuconfig` → `Component config` → `Example Configuration` → `Maximum WiFi connection retry`
+
+デフォルト: 5回
+
+### バッファサイズの変更
+
+`main/main.c` の以下の定数を変更:
+- `BUFFER_POOL_SIZE`: バッファプール内のバッファ数 (デフォルト: 16)
+- `BUFFER_SIZE`: 各バッファのサイズ (デフォルト: 512バイト)
+
+## トラブルシューティング
+
+### WiFiに接続できない
+
+1. プロビジョニング情報を消去して再設定:
+   ```bash
+   idf.py erase-flash
+   idf.py flash monitor
+   ```
+
+2. WiFi設定を確認 (SSID、パスワード)
+
+3. WiFi信号強度を確認
+
+### USBデバイスが認識されない
+
+1. USB接続を確認
+2. USBデバイスが正常に動作していることをPCで確認
+3. ESP32-S3のUSB OTGが有効になっていることを確認
+4. デバッグログを有効化:
+   ```bash
+   idf.py menuconfig
+   ```
+   Component config → Log output → Default log verbosity → Debug
+
+### TCPで接続できない
+
+1. デバイスとクライアントが同じネットワーク上にあることを確認
+2. ファイアウォール設定を確認
+3. IPアドレスとポート番号を確認
+4. `telnet <IP> 8888` で接続テスト
+
+### mDNSでデバイスが見つからない
+
+1. mDNSが有効なネットワークであることを確認
+2. デバイスがWiFiに接続されていることを確認
+3. mDNSクライアントツールが正しくインストールされていることを確認
+4. シリアルモニタでmDNS初期化ログを確認
+
+## コンポーネント
 
 ### FTDI SIO Host Driver
+カスタムコンポーネント: `components/usb_host_ftdi_sio/`
+- FTDI固有のUSB制御リクエスト
+- デバイス管理とバルク転送
+- FTDIチップタイプ検出
 
-Custom component located at `components/usb_host_ftdi_sio/`:
-- **Protocol Layer**: FTDI-specific USB control requests (baudrate, line properties, modem control)
-- **Host Driver**: USB device management, bulk transfers, event handling
-- **Descriptor Parsing**: FTDI chip type detection (FT232R, FT2232H, etc.)
+詳細は [components/usb_host_ftdi_sio/README.md](components/usb_host_ftdi_sio/README.md) を参照。
 
-See [components/usb_host_ftdi_sio/README.md](components/usb_host_ftdi_sio/README.md) for details.
+### ESP-IDF Managed Components
+- `espressif/usb_host_cdc_acm`: CDC-ACMホストドライバ
+- `espressif/network_provisioning`: WiFiプロビジョニング
+- `espressif/mdns`: mDNSサービスディスカバリ
 
-### CDC-ACM Host Driver
+## 制限事項
 
-Uses the ESP-IDF managed component: `espressif__usb_host_cdc_acm`
-- Standard USB CDC-ACM protocol
-- Line coding configuration
-- Control line state (DTR/RTS)
+- **シーケンシャル処理**: 一度に1つのUSBデバイスのみ処理
+- **単一TCP接続**: 同時に1つのTCPクライアントのみサポート
+- **マルチインターフェース非対応**: マルチポートFTDIデバイスは最初のインターフェースのみ使用
+- **VID優先ルーティング**: VID `0x0403` のデバイスは常にFTDIドライバにルーティング
 
-## Supported Devices
+## ライセンス
 
-### CDC-ACM Devices
-- ESP32-S2/S3 running TinyUSB CDC example
-- Arduino boards with native USB (Leonardo, Micro, etc.)
-- Most USB modems and virtual COM ports
-- Any USB device implementing CDC-ACM protocol
+このプロジェクトは Apache License 2.0 の下でライセンスされています。
 
-### FTDI Devices
-- FT232R (single port)
-- FT2232H (dual port)
-- FT4232H (quad port)
-- FT232H (high-speed single port)
-- Other FTDI chips with VID `0x0403`
+個々のコンポーネントのライセンスについては、各コンポーネントのREADMEを参照してください。
 
-## Limitations
+## 参考資料
 
-- **Sequential Device Handling**: Only one device is processed at a time
-- **No Multi-Interface Support**: Multi-port FTDI devices currently use only the first interface
-- **VID 0x0403 Priority**: Devices with FTDI VID are always routed to FTDI driver, even if they implement CDC-ACM
-
-## Troubleshooting
-
-### Build Errors
-
-**Problem**: `fatal error: usb/ftdi_sio_host.h: No such file or directory`
-
-**Solution**: Ensure you've selected "Auto-Detect (Both Drivers)" in menuconfig, or manually enable:
-```
-CONFIG_USB_SERIAL_DRIVER_AUTO=y
-```
-
-### Device Not Detected
-
-**Problem**: No device detection logs appear
-
-**Solutions**:
-1. Check USB cable connection
-2. Verify ESP32-S3 USB OTG is enabled
-3. Check USB device is functioning (test on PC)
-4. Enable debug logs: `idf.py menuconfig` → Component config → Log output → Default log verbosity → Debug
-
-### Wrong Driver Selected
-
-**Problem**: FTDI device handled by CDC driver (or vice versa)
-
-**Solutions**:
-1. Verify device VID with `lsusb` on Linux or Device Manager on Windows
-2. If FTDI device has non-standard VID, modify detection logic in `usb_serial_auto_main.c`
-3. Check driver installation logs to confirm both drivers are loaded
-
-## License
-
-This project is licensed under the Apache License 2.0.
-
-See individual component READMEs for component-specific licenses.
-
-## References
-
-- [ESP-IDF USB Host Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/usb_host.html)
-- [USB CDC-ACM Specification](https://www.usb.org/document-library/class-definitions-communication-devices-12)
-- [FTDI Chip Datasheets](https://ftdichip.com/product-category/products/ic/)
+- [ESP-IDF USB Host ドキュメント](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/usb_host.html)
+- [USB CDC-ACM 仕様](https://www.usb.org/document-library/class-definitions-communication-devices-12)
+- [FTDI チップ データシート](https://ftdichip.com/product-category/products/ic/)
 - [ESP32-S3 USB OTG](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/peripherals/usb_host.html)

@@ -1,12 +1,13 @@
 /*
  * SPDX-FileCopyrightText: 2026 Kenta Ida
  *
- * SPDX-License-Identifier: CC0-1.0
+ * SPDX-License-Identifier: Apache-2.0
  *
- * USB Serial Auto-Detection Example
+ * Serial WiFi Logger
  *
- * This example demonstrates automatic driver selection between CDC-ACM and FTDI
- * based on the connected USB device's VID/PID.
+ * This application provides a WiFi-to-USB serial bridge with automatic
+ * driver selection between CDC-ACM and FTDI devices, WiFi provisioning,
+ * TCP server, and mDNS service discovery.
  */
 
 #include <stdio.h>
