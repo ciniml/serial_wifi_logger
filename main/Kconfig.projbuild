@@ -2,7 +2,7 @@ menu "USB Serial Configuration"
 
     choice USB_SERIAL_DRIVER
         prompt "USB Serial Driver Type"
-        default USB_SERIAL_DRIVER_CDC
+        default USB_SERIAL_DRIVER_AUTO
         help
             Select the USB serial driver type to use.
 
