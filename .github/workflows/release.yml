@@ -1,0 +1,114 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v6.0
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Generate single firmware image
+        run: |
+          python3 script/pack_firmware.py
+          ls -lh firmware.bin
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="dev-${GITHUB_SHA::8}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Prepare release artifacts
+        run: |
+          mkdir -p release
+
+          # Copy individual binaries
+          cp build/bootloader/bootloader.bin release/
+          cp build/partition_table/partition-table.bin release/
+          cp build/serial_wifi_logger.bin release/
+
+          # Copy single firmware image
+          cp firmware.bin release/firmware-${{ steps.version.outputs.version }}.bin
+
+          # Copy flash arguments
+          cp build/flash_args release/
+
+          # Copy README from repository
+          cp README.md release/
+
+          ls -lh release/
+
+      - name: Create firmware ZIP
+        run: |
+          cd release
+          zip -r ../firmware-${{ steps.version.outputs.version }}.zip .
+          cd ..
+          ls -lh firmware-${{ steps.version.outputs.version }}.zip
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-${{ steps.version.outputs.version }}
+          path: release/
+          retention-days: 90
+
+      - name: Create Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: firmware-${{ steps.version.outputs.version }}.zip
+          body: |
+            # Serial WiFi Logger Firmware ${{ steps.version.outputs.version }}
+
+            ## Features
+            - USB Serial to WiFi TCP Bridge (CDC-ACM & FTDI support)
+            - WiFi Network Provisioning (SoftAP)
+            - TCP Data Port: 8888 (configurable)
+            - TCP Control Port: 8889 (configurable)
+            - mDNS Service Discovery
+            - DTR/RTS/Baudrate control via TCP
+
+            ## What's Changed
+            See commit history for detailed changes.
+
+            ## Installation
+            1. Download `firmware-${{ steps.version.outputs.version }}.zip`
+            2. Extract the ZIP file
+            3. Follow instructions in README.txt
+
+            ## Build Information
+            - **ESP-IDF Version**: v6.0
+            - **Target**: ESP32-S3
+            - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+            - **Commit**: ${{ github.sha }}
+
+            ## Full Changelog
+            https://github.com/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

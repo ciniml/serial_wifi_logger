@@ -50,13 +50,39 @@ ESP32-S3は内部USB OTGピンを使用:
 
 ## ビルドとフラッシュ
 
-### 1. プロジェクトのビルド
+### 1. リリースバイナリを使用する場合
+
+GitHubのReleasesページから最新のファームウェアZIPファイルをダウンロードして使用できます。
+
+**方法1: 個別バイナリをフラッシュ**
+
+```bash
+# ZIPファイルを展開後、以下のコマンドを実行
+esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 460800 write_flash \
+  0x0 bootloader.bin \
+  0x8000 partition-table.bin \
+  0x10000 serial_wifi_logger.bin
+```
+
+**方法2: 単一イメージをフラッシュ（推奨）**
+
+```bash
+# ZIPファイルを展開後、firmware-vX.X.X.binをフラッシュ
+esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 460800 write_flash \
+  0x0 firmware-vX.X.X.bin
+```
+
+`/dev/ttyUSB0` をシリアルポートに置き換えてください (例: Linux では `/dev/ttyUSB0`, Windows では `COM3`)。
+
+### 2. ソースからビルドする場合
+
+**プロジェクトのビルド**
 
 ```bash
 idf.py build
 ```
 
-### 2. ESP32-S3へのフラッシュ
+**ESP32-S3へのフラッシュ**
 
 ```bash
 idf.py -p PORT flash monitor

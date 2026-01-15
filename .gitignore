@@ -3,3 +3,10 @@ managed_components
 dependencies.lock
 sdkconfig.old
 sdkconfig
+
+# Firmware binaries
+firmware.bin
+*.zip
+
+# Release artifacts
+release/
