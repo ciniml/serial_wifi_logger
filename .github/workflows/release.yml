@@ -18,9 +18,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+          fetch-depth: 0  # Fetch all history for git describe to work
+
+      - name: Verify git version information
+        shell: bash
+        run: |
+          echo "=== Git Information ==="
+          git describe --tags --abbrev=0 || echo "No tags found"
+          git rev-parse --short HEAD
+          git diff-index --quiet HEAD -- && echo "Working tree clean" || echo "Working tree dirty"
+          echo "Current tag: ${GITHUB_REF#refs/tags/}"
+          echo "CI environment: $CI"
 
       - name: Build firmware
         shell: bash
+        env:
+          CI: true  # Mark as release build
         run: |
           . $IDF_PATH/export.sh
           idf.py set-target esp32s3
@@ -65,6 +78,10 @@ jobs:
           # Copy README from repository
           cp README.md release/
 
+          # Display firmware size info
+          echo "=== Firmware Size Information ==="
+          python3 -m esp_idf_size build/serial_wifi_logger.map --format=text || true
+
           ls -lh release/
 
       - name: Create firmware ZIP
@@ -90,26 +107,46 @@ jobs:
             # Serial WiFi Logger Firmware ${{ steps.version.outputs.version }}
 
             ## Features
-            - USB Serial to WiFi TCP Bridge (CDC-ACM & FTDI support)
-            - WiFi Network Provisioning (SoftAP)
-            - TCP Data Port: 8888 (configurable)
-            - TCP Control Port: 8889 (configurable)
-            - mDNS Service Discovery
-            - DTR/RTS/Baudrate control via TCP
+            - **USB Serial to WiFi TCP Bridge** (CDC-ACM & FTDI support)
+            - **WiFi Network Provisioning** (SoftAP)
+            - **OTA Firmware Updates** (HTTP Web UI)
+            - **TCP Data Port**: 8888 (configurable)
+            - **TCP Control Port**: 8889 (configurable)
+            - **mDNS Service Discovery** (`_serial._tcp` and `_http._tcp`)
+            - **DTR/RTS/Baudrate control** via TCP
+            - **Automatic Rollback** on firmware crash
+
+            ## Installation
+
+            ### Initial Flash (First Time)
+            1. Download `firmware-${{ steps.version.outputs.version }}.zip`
+            2. Extract the ZIP file
+            3. Flash using single image (recommended):
+               ```bash
+               esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 460800 write_flash \
+                 0x0 firmware-${{ steps.version.outputs.version }}.bin
+               ```
+
+            ### OTA Update (After Initial Flash)
+            1. Download `firmware-${{ steps.version.outputs.version }}.zip`
+            2. Extract `serial_wifi_logger.bin`
+            3. Access Web UI at `http://serial-XXXXXX.local/`
+            4. Upload `serial_wifi_logger.bin` via browser or curl:
+               ```bash
+               curl -X POST --data-binary @serial_wifi_logger.bin \
+                 -H "Content-Type: application/octet-stream" \
+                 http://serial-XXXXXX.local/api/ota
+               ```
 
             ## What's Changed
             See commit history for detailed changes.
-
-            ## Installation
-            1. Download `firmware-${{ steps.version.outputs.version }}.zip`
-            2. Extract the ZIP file
-            3. Follow instructions in README.md
 
             ## Build Information
             - **ESP-IDF Version**: v6.0
             - **Target**: ESP32-S3
             - **Build Date**: ${{ steps.version.outputs.build_date }}
             - **Commit**: ${{ github.sha }}
+            - **Partition Layout**: Dual OTA (960KB × 2)
 
             ## Full Changelog
             https://github.com/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}
