@@ -68,6 +68,7 @@ endif()
 idf_component_register(SRCS main.c
                             provisioning.c
                             version.c
+                            ota_server.c
                     INCLUDE_DIRS "."
                     PRIV_REQUIRES espressif__usb_host_cdc_acm
                                   usb_host_ftdi_sio
@@ -75,6 +76,8 @@ idf_component_register(SRCS main.c
                                   esp_wifi
                                   lwip
                                   nvs_flash
+                                  esp_http_server
+                                  app_update
                     )
 
 # Add compile definitions for version information

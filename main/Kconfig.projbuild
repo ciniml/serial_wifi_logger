@@ -95,3 +95,32 @@ menu "Network Provisioning Configuration"
             Set the maximum retry count for WiFi connection attempts.
 
 endmenu
+
+menu "OTA Update Configuration"
+
+    config OTA_HTTP_SERVER_PORT
+        int "HTTP Server Port"
+        range 1 65535
+        default 80
+        help
+            Port number for the HTTP server used for OTA firmware updates.
+            Default is 80 for standard HTTP access.
+
+    config OTA_MAX_UPLOAD_SIZE
+        int "Maximum Firmware Size (bytes)"
+        range 524288 983040
+        default 983040
+        help
+            Maximum firmware size in bytes (960 KB default).
+            This prevents uploading firmware larger than the OTA partition.
+            Must not exceed the size of ota_0/ota_1 partitions (0xF0000 = 983040 bytes).
+
+    config OTA_ENABLE_ROLLBACK
+        bool "Enable Automatic Rollback"
+        default y
+        help
+            Enable automatic rollback to previous firmware if new firmware
+            fails to boot or crashes. The bootloader will automatically
+            revert to the previous working firmware version.
+
+endmenu

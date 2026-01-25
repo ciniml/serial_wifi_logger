@@ -48,6 +48,10 @@
 // mDNS
 #include "mdns.h"
 
+// OTA server
+#include "ota_server.h"
+#include "esp_ota_ops.h"
+
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
 #define EXAMPLE_TX_STRING           ("Auto-detect test string!")
 #define EXAMPLE_TX_TIMEOUT_MS       (1000)
@@ -342,14 +346,19 @@ static void init_mdns(void)
     char control_port_str[6];
     snprintf(control_port_str, sizeof(control_port_str), "%d", CONFIG_TCP_CONTROL_PORT);
 
-    // Initial TXT records
+    char ota_url[64];
+    snprintf(ota_url, sizeof(ota_url), "http://%s.local/", mdns_instance_name);
+
+    // Initial TXT records for _serial._tcp
     mdns_txt_item_t txt_data[] = {
         {"mac", mac_str},
         {"ip", ip_str},
         {"port", port_str},
         {"control_port", control_port_str},
         {"usb_connected", "0"},
-        {"tcp_connected", "0"}
+        {"tcp_connected", "0"},
+        {"ota_enabled", "1"},
+        {"ota_url", ota_url}
     };
 
     // Register _serial._tcp service
@@ -359,6 +368,20 @@ static void init_mdns(void)
 
     ESP_LOGI(TAG, "mDNS service registered: %s._serial._tcp.local:%d",
              mdns_instance_name, CONFIG_TCP_SERVER_PORT);
+
+    // Register _http._tcp service for OTA
+    mdns_txt_item_t http_txt_data[] = {
+        {"path", "/"},
+        {"ota", "enabled"},
+        {"version", get_version_string()}
+    };
+
+    ESP_ERROR_CHECK(mdns_service_add(mdns_instance_name, "_http", "_tcp",
+                                      CONFIG_OTA_HTTP_SERVER_PORT, http_txt_data,
+                                      sizeof(http_txt_data) / sizeof(http_txt_data[0])));
+
+    ESP_LOGI(TAG, "mDNS HTTP service registered: %s._http._tcp.local:%d",
+             mdns_instance_name, CONFIG_OTA_HTTP_SERVER_PORT);
 }
 
 /**
@@ -1351,9 +1374,27 @@ void app_main(void)
     if (bits & WIFI_CONNECTED_BIT) {
         ESP_LOGI(TAG, "Connected to WiFi");
 
+        // Check OTA rollback status
+        const esp_partition_t *running = esp_ota_get_running_partition();
+        esp_ota_img_states_t ota_state;
+        if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+            if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+                ESP_LOGI(TAG, "First boot after OTA update, marking app as valid");
+                esp_ota_mark_app_valid_cancel_rollback();
+            }
+        }
+        ESP_LOGI(TAG, "Running from partition: %s", running->label);
+
         // Initialize mDNS service
         ESP_LOGI(TAG, "Initializing mDNS service...");
         init_mdns();
+
+        // Initialize OTA HTTP server
+        ESP_LOGI(TAG, "Initializing OTA HTTP server...");
+        esp_err_t ota_err = ota_server_init();
+        if (ota_err != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start OTA server: %s", esp_err_to_name(ota_err));
+        }
     } else {
         ESP_LOGE(TAG, "Failed to connect to WiFi");
         return;
