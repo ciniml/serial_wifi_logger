@@ -23,6 +23,9 @@ jobs:
       - name: Verify git version information
         shell: bash
         run: |
+          # Fix git ownership issue in container
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
           echo "=== Git Information ==="
           git describe --tags --abbrev=0 || echo "No tags found"
           git rev-parse --short HEAD
