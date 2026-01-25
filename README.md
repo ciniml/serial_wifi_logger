@@ -32,9 +32,17 @@ Serial WiFi Loggerは、ESP32-S3のUSB OTG機能を使用してUSBシリアル�
 - **サービス名**: `serial-XXXXXX._serial._tcp.local` (XXXXXXはMACアドレスの下位3バイト)
 - **動的TXTレコード**: USB接続状態、TCP接続状態、デバイス情報をリアルタイム更新
 
+### 5. OTA (Over-The-Air) ファームウェアアップデート
+- **デュアルパーティション**: 安全なロールバック機能付き2面構成
+- **HTTP Web UI**: ブラウザから簡単にファームウェア更新
+- **自動ロールバック**: 新ファームウェアクラッシュ時に自動復旧
+- **mDNS統合**: `http://serial-XXXXXX.local/` でアクセス可能
+- **進捗表示**: リアルタイムアップロード進捗バー
+
 ## 必要なハードウェア
 
 - **ESP32-S3 開発ボード** (USB OTG対応)
+  - **最小フラッシュサイズ**: 2MB (OTA対応のため)
 - **USB ケーブル** (プログラミング・モニタリング用)
 - **USB シリアルデバイス**:
   - CDC-ACMデバイス (別のESP32-S3、Arduinoなど)
@@ -47,6 +55,20 @@ ESP32-S3は内部USB OTGピンを使用:
 - **GPIO 20**: USB D+ (データ線正極)
 
 外部ピン設定は不要です。
+
+### パーティション構成
+
+OTA対応のデュアルパーティション構成:
+
+| パーティション | タイプ | サブタイプ | オフセット | サイズ | 用途 |
+|--------------|--------|-----------|-----------|--------|------|
+| nvs | data | nvs | 0x9000 | 16KB | WiFi設定等の不揮発性ストレージ |
+| otadata | data | ota | 0xd000 | 8KB | OTA起動パーティション管理 |
+| phy_init | data | phy | 0xf000 | 4KB | RF校正データ |
+| ota_0 | app | ota_0 | 0x10000 | 960KB | プライマリアプリケーション |
+| ota_1 | app | ota_1 | 0x100000 | 960KB | セカンダリアプリケーション |
+
+**合計使用:** 1984KB / 2048KB (64KB予備)
 
 ## ビルドとフラッシュ
 
@@ -106,6 +128,214 @@ idf.py -p PORT flash monitor
 プロビジョニング情報をリセットするには:
 ```bash
 idf.py erase-flash
+```
+
+## OTAファームウェアアップデート
+
+### リリースアーカイブからファームウェアを取得
+
+GitHubのReleasesページからダウンロードしたZIPファイルには、OTAアップデート用のファームウェアが含まれています。
+
+```bash
+# ZIPファイルを展開
+unzip serial_wifi_logger-vX.X.X.zip
+
+# OTA用ファームウェアを確認
+ls -lh serial_wifi_logger.bin
+```
+
+**ファイル:**
+- `serial_wifi_logger.bin` - OTAアップデート用のアプリケーションバイナリ (約900KB)
+
+このファイルをブラウザまたはcurlでアップロードします。
+
+### 方法1: Webブラウザからアップデート（推奨）
+
+![OTA Web UI](doc/webui.png)
+
+1. **WebUIにアクセス**
+   ```
+   http://serial-XXXXXX.local/
+   ```
+   または直接IPアドレスで:
+   ```
+   http://<デバイスのIPアドレス>/
+   ```
+
+2. **デバイス情報を確認**
+   - Firmware Version: 現在のバージョン
+   - Running Partition: 現在起動中のパーティション (ota_0 または ota_1)
+   - Uptime: 稼働時間
+
+3. **ファームウェアをアップロード**
+   - 「ファイルを選択」をクリック
+   - `serial_wifi_logger.bin` を選択
+   - 「Upload Firmware」ボタンをクリック
+
+4. **アップロード完了を待機**
+   - 進捗バーでアップロード状況を確認
+   - 「Firmware uploaded successfully! Device will reboot in 3 seconds...」のメッセージを確認
+   - デバイスが自動的に再起動
+
+5. **新ファームウェアで起動**
+   - 再起動後、新しいパーティション (ota_0 ↔ ota_1 が切り替わる) から起動
+   - ブラウザで再読み込み (F5 または Ctrl+R) してWebUIに再接続
+   - バージョンとRunning Partitionが更新されていることを確認
+
+**注意:**
+- アップロード中はデバイスへの他の操作を避けてください
+- WiFi接続が安定していることを確認してください
+- アップロードには約30-60秒かかります (ファームウェアサイズとWiFi速度による)
+
+### 方法2: curlコマンドでアップデート
+
+コマンドラインから直接ファームウェアをアップロードできます。
+
+```bash
+# デバイス情報を確認
+curl http://serial-XXXXXX.local/api/info
+
+# 出力例:
+# {"version":"0.1.0 g5f9ddec DEV","partition":"ota_0","uptime":120}
+
+# ファームウェアをアップロード
+curl -X POST \
+  --data-binary @serial_wifi_logger.bin \
+  -H "Content-Type: application/octet-stream" \
+  http://serial-XXXXXX.local/api/ota
+
+# 成功時の応答: OK
+```
+
+**スクリプト例:**
+
+```bash
+#!/bin/bash
+DEVICE="serial-A02048.local"
+FIRMWARE="serial_wifi_logger.bin"
+
+echo "Current device info:"
+curl -s http://$DEVICE/api/info | jq .
+
+echo -e "\nUploading firmware..."
+RESPONSE=$(curl -X POST --data-binary @$FIRMWARE \
+  -H "Content-Type: application/octet-stream" \
+  -w "\nHTTP Status: %{http_code}\n" \
+  http://$DEVICE/api/ota)
+
+echo "$RESPONSE"
+
+if echo "$RESPONSE" | grep -q "OK"; then
+  echo "✓ Upload successful! Device will reboot in 3 seconds."
+else
+  echo "✗ Upload failed!"
+  exit 1
+fi
+```
+
+### 方法3: IPアドレスを直接指定
+
+mDNSが利用できない環境では、IPアドレスを直接使用できます。
+
+```bash
+# デバイスのIPアドレスを確認 (シリアルモニタやmDNS検索)
+IP_ADDRESS=192.168.1.100
+
+# Webブラウザでアクセス
+open http://$IP_ADDRESS/
+
+# またはcurlでアップロード
+curl -X POST --data-binary @serial_wifi_logger.bin \
+  -H "Content-Type: application/octet-stream" \
+  http://$IP_ADDRESS/api/ota
+```
+
+### OTA HTTP API
+
+#### GET /api/info
+デバイス情報をJSON形式で取得
+
+**レスポンス例:**
+```json
+{
+  "version": "0.1.0 g5f9ddec DEV",
+  "partition": "ota_1",
+  "uptime": 3600
+}
+```
+
+#### POST /api/ota
+ファームウェアバイナリをアップロード
+
+**リクエスト:**
+- Content-Type: `application/octet-stream`
+- Body: ファームウェアバイナリ (raw binary)
+
+**レスポンス:**
+- 成功: `200 OK` + `"OK"` ボディ
+- 失敗: `400 Bad Request` または `500 Internal Server Error` + エラーメッセージ
+
+**検証:**
+- ファームウェアサイズ: 最大960KB
+- マジックバイト: 0xE9 (ESP32アプリケーションヘッダー)
+- SHA256チェックサム: 自動検証
+
+### トラブルシューティング (OTA)
+
+#### アップロードが失敗する
+
+**原因1: ファームウェアサイズ超過**
+```
+Error: Firmware too large
+```
+- ファームウェアサイズが960KBを超えています
+- コンパイラ最適化を確認: `CONFIG_COMPILER_OPTIMIZATION_SIZE=y`
+
+**原因2: 不正なファームウェアフォーマット**
+```
+Error: Invalid firmware format
+```
+- `serial_wifi_logger.bin` を使用していることを確認
+- `firmware-vX.X.X.bin` (統合イメージ) ではなく、アプリケーションバイナリを使用
+
+**原因3: ネットワーク接続エラー**
+```
+Error: Connection error
+```
+- WiFi接続が安定していることを確認
+- デバイスとクライアントが同じネットワークにあることを確認
+
+#### 新ファームウェアで起動しない
+
+デバイスは自動的にロールバックします:
+
+1. **自動ロールバック**
+   - 新ファームウェアがクラッシュした場合
+   - ブートローダーが自動的に前のパーティションに戻します
+   - 再起動後、元のファームウェアで起動
+
+2. **手動確認**
+   ```bash
+   # WebUIまたはAPIで現在のパーティションを確認
+   curl http://serial-XXXXXX.local/api/info | jq .partition
+   ```
+
+3. **シリアルログ確認**
+   ```bash
+   idf.py monitor
+   ```
+   ログで以下を確認:
+   - `Running from partition: ota_X`
+   - `First boot after OTA, marking app as valid`
+
+#### mDNSでアクセスできない
+
+```bash
+# IPアドレスを直接使用
+curl http://192.168.1.100/api/info
+
+# またはmDNS検索
+avahi-browse -r _http._tcp
 ```
 
 ## 使用方法
@@ -215,6 +445,8 @@ BAUD 115200
 
 以下の情報がmDNS TXTレコードとして公開されます:
 
+### _serial._tcp サービス
+
 | キー | 説明 | 例 |
 |-----|------|---|
 | `mac` | デバイスMACアドレス | `AA:BB:CC:DD:EE:FF` |
@@ -226,6 +458,16 @@ BAUD 115200
 | `usb_pid` | USB Product ID (接続時のみ) | `0x6001` |
 | `usb_type` | USBドライバタイプ (接続時のみ) | `CDC` / `FTDI` |
 | `tcp_connected` | TCPクライアント接続状態 | `0` / `1` |
+| `ota_enabled` | OTA機能有効状態 | `1` |
+| `ota_url` | OTA WebUI URL | `http://serial-XXXXXX.local/` |
+
+### _http._tcp サービス (OTA用)
+
+| キー | 説明 | 例 |
+|-----|------|---|
+| `path` | WebUIパス | `/` |
+| `ota` | OTA機能 | `enabled` |
+| `version` | ファームウェアバージョン | `0.1.0 g5f9ddec DEV` |
 
 ## 対応デバイス
 
@@ -250,17 +492,25 @@ BAUD 115200
 - **TCP Control Port**: 制御ポート番号（デフォルト: 8889）
 - **TCP RX Buffer Size**: TCP受信バッファサイズ（デフォルト: 512バイト）
 
+### OTA アップデート設定
+
+`idf.py menuconfig` → `OTA Update Configuration`
+
+- **HTTP Server Port**: HTTPサーバーポート番号（デフォルト: 80）
+- **Maximum Firmware Size**: 最大ファームウェアサイズ（デフォルト: 983040バイト = 960KB）
+- **Enable Automatic Rollback**: 自動ロールバック有効化（デフォルト: 有効）
+
 ### WiFi 再試行回数の変更
 
-`idf.py menuconfig` → `Component config` → `Example Configuration` → `Maximum WiFi connection retry`
+`idf.py menuconfig` → `Network Provisioning Configuration` → `Maximum WiFi connection retry`
 
 デフォルト: 5回
 
 ### バッファサイズの変更
 
-`main/main.c` の以下の定数を変更:
-- `BUFFER_POOL_SIZE`: バッファプール内のバッファ数 (デフォルト: 16)
-- `BUFFER_SIZE`: 各バッファのサイズ (デフォルト: 512バイト)
+`idf.py menuconfig` → `TCP Server Configuration` → `Data Buffer Pool Size`
+
+デフォルト: 16バッファ
 
 ## トラブルシューティング
 
