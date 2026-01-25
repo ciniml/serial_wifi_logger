@@ -42,6 +42,11 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
+          # Generate build date
+          BUILD_DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          echo "build_date=$BUILD_DATE" >> $GITHUB_OUTPUT
+          echo "Build date: $BUILD_DATE"
+
       - name: Prepare release artifacts
         run: |
           mkdir -p release
@@ -98,12 +103,12 @@ jobs:
             ## Installation
             1. Download `firmware-${{ steps.version.outputs.version }}.zip`
             2. Extract the ZIP file
-            3. Follow instructions in README.txt
+            3. Follow instructions in README.md
 
             ## Build Information
             - **ESP-IDF Version**: v6.0
             - **Target**: ESP32-S3
-            - **Build Date**: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+            - **Build Date**: ${{ steps.version.outputs.build_date }}
             - **Commit**: ${{ github.sha }}
 
             ## Full Changelog

@@ -39,6 +39,9 @@
 #include "lwip/netdb.h"
 #include "esp_netif.h"
 
+// Version information
+#include "version.h"
+
 // Provisioning
 #include "provisioning.h"
 
@@ -112,7 +115,8 @@ typedef enum {
     CMD_UNKNOWN,
     CMD_DTR,
     CMD_RTS,
-    CMD_BAUD
+    CMD_BAUD,
+    CMD_VERSION
 } command_type_t;
 
 typedef struct {
@@ -170,7 +174,7 @@ static void update_mdns_tcp_status(bool connected);
 
 // Control port functions
 static bool parse_command(const char *cmd_str, parsed_command_t *cmd);
-static esp_err_t execute_command(const parsed_command_t *cmd);
+static esp_err_t execute_command(const parsed_command_t *cmd, char *response_buffer, size_t buffer_size);
 static void control_server_task(void *pvParameters);
 
 // ============= USB HOST TASK =============
@@ -419,10 +423,20 @@ static bool parse_command(const char *cmd_str, parsed_command_t *cmd)
     char *newline = strchr(buffer, '\n');
     if (newline) *newline = '\0';
 
-    // Parse command
+    // Parse command name first
     char cmd_name[16];
-    int value;
 
+    // Check for VERSION command (no parameter)
+    if (sscanf(buffer, "%15s", cmd_name) >= 1) {
+        if (strcmp(cmd_name, "VERSION") == 0) {
+            cmd->type = CMD_VERSION;
+            cmd->value = 0;  // Not used
+            return true;
+        }
+    }
+
+    // Parse commands with parameters (DTR, RTS, BAUD)
+    int value;
     if (sscanf(buffer, "%15s %d", cmd_name, &value) != 2) {
         return false;
     }
@@ -450,11 +464,20 @@ static bool parse_command(const char *cmd_str, parsed_command_t *cmd)
  * @brief Execute control command
  *
  * @param cmd Parsed command
+ * @param response_buffer Buffer for custom response (used for VERSION command)
+ * @param buffer_size Size of response buffer
  * @return esp_err_t ESP_OK on success
  */
-static esp_err_t execute_command(const parsed_command_t *cmd)
+static esp_err_t execute_command(const parsed_command_t *cmd, char *response_buffer, size_t buffer_size)
 {
     esp_err_t ret = ESP_OK;
+
+    // Handle VERSION command separately (no device needed)
+    if (cmd->type == CMD_VERSION) {
+        snprintf(response_buffer, buffer_size, "%s\n", get_version_string());
+        ESP_LOGI(TAG, "VERSION: %s", get_version_string());
+        return ESP_OK;
+    }
 
     // Acquire device mutex
     if (xSemaphoreTake(device_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
@@ -609,13 +632,19 @@ static void control_server_task(void *pvParameters)
 
                 // Parse command
                 parsed_command_t cmd;
+                char response_buffer[128];
+
                 if (parse_command(rx_buffer, &cmd)) {
                     // Execute command
-                    esp_err_t ret = execute_command(&cmd);
+                    esp_err_t ret = execute_command(&cmd, response_buffer, sizeof(response_buffer));
 
-                    // Send response
-                    const char *response = (ret == ESP_OK) ? "OK\n" : "ERROR\n";
-                    send(sock, response, strlen(response), 0);
+                    // Send response (custom for VERSION, standard for others)
+                    if (cmd.type == CMD_VERSION) {
+                        send(sock, response_buffer, strlen(response_buffer), 0);
+                    } else {
+                        const char *response = (ret == ESP_OK) ? "OK\n" : "ERROR\n";
+                        send(sock, response, strlen(response), 0);
+                    }
                 } else {
                     // Invalid command
                     ESP_LOGW(TAG, "Invalid command: %s", rx_buffer);
@@ -1246,6 +1275,7 @@ static void handle_device(device_info_t *dev_info)
 void app_main(void)
 {
     ESP_LOGI(TAG, "USB Serial to TCP Bridge with Network Provisioning");
+    ESP_LOGI(TAG, "Version: %s", get_version_string());
 
     // 1. Initialize NVS
     esp_err_t ret = nvs_flash_init();
