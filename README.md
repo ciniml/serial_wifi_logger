@@ -233,7 +233,83 @@ else
 fi
 ```
 
-### 方法3: IPアドレスを直接指定
+### 方法3: 自動OTAアップデートスクリプト（推奨）
+
+GitHubリリースから自動的にファームウェアをダウンロードしてアップデートするスクリプトを用意しています。
+
+**必要な依存関係:**
+```bash
+# Ubuntu/Debian
+sudo apt-get install curl jq unzip
+
+# macOS
+brew install curl jq unzip
+```
+
+**使用方法:**
+```bash
+# 最新バージョンにアップデート
+./script/ota_update.sh serial-A02048.local
+
+# 特定バージョンにアップデート
+./script/ota_update.sh serial-A02048.local v1.0.0
+
+# IPアドレスで指定
+./script/ota_update.sh 192.168.1.100 latest
+```
+
+**実行例:**
+```bash
+$ ./script/ota_update.sh serial-A02048.local
+[INFO] OTA Firmware Update Tool
+[INFO] Target device: serial-A02048.local
+[INFO] Version: latest
+
+[INFO] Fetching device information from http://serial-A02048.local/api/info
+
+════════════════════════════════════════
+  Device Information
+════════════════════════════════════════
+  Address:    serial-A02048.local
+  Version:    0.1.0 g5f9ddec DEV
+  Partition:  ota_0
+  Uptime:     3600s
+════════════════════════════════════════
+
+Continue with OTA update? (y/N): y
+[INFO] Fetching latest release information from GitHub...
+[INFO] Found release: Serial WiFi Logger v1.0.0 (v1.0.0)
+[INFO] Downloading firmware from: https://github.com/.../firmware-v1.0.0.zip
+[INFO] Extracted firmware: 931K
+[INFO] Uploading firmware to serial-A02048.local...
+[SUCCESS] Firmware uploaded successfully!
+[INFO] Device will reboot in 3 seconds...
+[SUCCESS] OTA update completed successfully!
+```
+
+**環境変数:**
+- `GITHUB_TOKEN`: プライベートリポジトリの場合、GitHubパーソナルアクセストークンを設定
+- `DEBUG`: デバッグモードを有効化（`DEBUG=1`で詳細なログ出力）
+
+**スクリプトの機能:**
+- GitHubから最新または指定バージョンのリリースを取得
+- ファームウェアZIPファイルを自動ダウンロード
+- デバイス情報の確認（アップデート前）
+- ファームウェアのアップロード
+- アップデート後の検証
+- エラーハンドリングと詳細なログ出力
+- デバッグモード対応
+
+**トラブルシューティング:**
+
+問題が発生した場合は、デバッグモードで実行してください:
+```bash
+DEBUG=1 ./script/ota_update.sh serial-A02048.local v0.2.0
+```
+
+詳細なトラブルシューティング情報は [script/README.md](script/README.md) を参照してください。
+
+### 方法4: IPアドレスを直接指定
 
 mDNSが利用できない環境では、IPアドレスを直接使用できます。
 
