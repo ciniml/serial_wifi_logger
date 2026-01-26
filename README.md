@@ -76,7 +76,24 @@ OTA対応のデュアルパーティション構成:
 
 GitHubのReleasesページから最新のファームウェアZIPファイルをダウンロードして使用できます。
 
-**方法1: 個別バイナリをフラッシュ**
+**方法1: 自動フラッシュスクリプト（推奨）**
+
+GitHubから自動的にファームウェアをダウンロードしてフラッシュするスクリプトを用意しています。
+
+```bash
+# 依存関係のインストール
+pip3 install esptool
+
+# 最新バージョンをフラッシュ（ポート自動検出）
+./script/flash_firmware.sh
+
+# 特定バージョンをフラッシュ
+./script/flash_firmware.sh v0.2.0 /dev/ttyUSB0
+```
+
+詳細は [script/README.md](script/README.md#flash_firmwaresh) を参照してください。
+
+**方法2: 個別バイナリを手動フラッシュ**
 
 ```bash
 # ZIPファイルを展開後、以下のコマンドを実行
@@ -86,7 +103,7 @@ esptool.py --chip esp32s3 --port /dev/ttyUSB0 --baud 460800 write_flash \
   0x10000 serial_wifi_logger.bin
 ```
 
-**方法2: 単一イメージをフラッシュ（推奨）**
+**方法3: 単一イメージを手動フラッシュ**
 
 ```bash
 # ZIPファイルを展開後、firmware-vX.X.X.binをフラッシュ
