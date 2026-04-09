@@ -52,9 +52,12 @@
 #include "ota_server.h"
 #include "esp_ota_ops.h"
 
+// RFC2217 server
+#ifdef CONFIG_RFC2217_ENABLE
+#include "rfc2217_server.h"
+#endif
+
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
-#define EXAMPLE_TX_STRING           ("Auto-detect test string!")
-#define EXAMPLE_TX_TIMEOUT_MS       (1000)
 
 static const char *TAG = "USB-AUTO";
 
@@ -135,12 +138,12 @@ static tcp_server_t tcp_server;
 static control_server_t control_server;
 static QueueHandle_t usb_to_tcp_queue;  // USB → TCP queue (stores buffer pointers)
 static QueueHandle_t tcp_to_usb_queue;  // TCP → USB queue (stores buffer pointers)
-static device_info_t *current_device = NULL;  // Currently connected USB device
+device_info_t *current_device = NULL;  // Currently connected USB device (non-static for serial_control access)
 static EventGroupHandle_t wifi_event_group;
 static int s_retry_num = 0;
 static buffer_pool_t buffer_pool;  // Static buffer pool
 static char mdns_instance_name[32];  // mDNS service instance name
-static SemaphoreHandle_t device_mutex;  // Device mutex for thread-safe access
+SemaphoreHandle_t device_mutex;  // Device mutex for thread-safe access (non-static for serial_control access)
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
@@ -804,7 +807,7 @@ static void tcp_server_task(void *pvParameters)
 /**
  * @brief USB → TCP bridge task
  *
- * Forwards data from USB to TCP client
+ * Forwards data from USB to TCP client and RFC2217 server
  */
 static void usb_to_tcp_bridge_task(void *pvParameters)
 {
@@ -812,6 +815,7 @@ static void usb_to_tcp_bridge_task(void *pvParameters)
 
     while (1) {
         if (xQueueReceive(usb_to_tcp_queue, &buf, portMAX_DELAY) == pdTRUE) {
+            // Forward to raw TCP client (port 8888)
             if (tcp_server.connected && tcp_server.client_sock >= 0) {
                 xSemaphoreTake(tcp_server.tx_mutex, portMAX_DELAY);
 
@@ -829,6 +833,11 @@ static void usb_to_tcp_bridge_task(void *pvParameters)
                 }
 
                 xSemaphoreGive(tcp_server.tx_mutex);
+            }
+
+            // Forward to RFC2217 client (port 2217)
+            if (rfc2217_server_is_connected()) {
+                rfc2217_server_send_data(buf->data, buf->len);
             }
 
             // Free buffer after processing
@@ -944,7 +953,7 @@ static void ftdi_new_device_callback(uint16_t vid, uint16_t pid, void *user_arg)
  */
 static void cdc_handle_rx(uint8_t *data, size_t data_len, void *arg)
 {
-    ESP_LOGI(TAG, "[CDC] Data received (%d bytes)", data_len);
+    ESP_LOGD(TAG, "[CDC] Data received (%d bytes)", data_len);
     //ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
 
     // Forward data to TCP queue
@@ -956,7 +965,7 @@ static void cdc_handle_rx(uint8_t *data, size_t data_len, void *arg)
             // Allocate buffer from pool
             data_buffer_t *buf = buffer_alloc();
             if (buf == NULL) {
-                ESP_LOGW(TAG, "[CDC] No buffer available, data dropped");
+                ESP_LOGW(TAG, "[CDC] Buffer pool exhausted, dropped %d bytes", remaining);
                 break;
             }
 
@@ -964,10 +973,11 @@ static void cdc_handle_rx(uint8_t *data, size_t data_len, void *arg)
             memcpy(buf->data, data + offset, chunk_size);
             buf->len = chunk_size;
 
-            // Send buffer pointer to queue
-            if (xQueueSend(usb_to_tcp_queue, &buf, 0) != pdTRUE) {
-                ESP_LOGW(TAG, "[CDC] USB→TCP queue full, data dropped");
-                buffer_free(buf);  // Free buffer if queue is full
+            // Send buffer pointer to queue.
+            // Block up to 2s to propagate backpressure to the USB device (flow control).
+            if (xQueueSend(usb_to_tcp_queue, &buf, pdMS_TO_TICKS(2000)) != pdTRUE) {
+                ESP_LOGW(TAG, "[CDC] USB→TCP queue full after 2s, dropped %d bytes", remaining);
+                buffer_free(buf);
                 break;
             }
 
@@ -987,7 +997,7 @@ static void cdc_handle_rx(uint8_t *data, size_t data_len, void *arg)
  */
 static void ftdi_handle_rx(const uint8_t *data, size_t data_len, void *arg)
 {
-    ESP_LOGI(TAG, "[FTDI] Data received (%d bytes)", data_len);
+    ESP_LOGD(TAG, "[FTDI] Data received (%d bytes)", data_len);
     //ESP_LOG_BUFFER_HEXDUMP(TAG, data, data_len, ESP_LOG_INFO);
 
     // Forward data to TCP queue
@@ -999,7 +1009,7 @@ static void ftdi_handle_rx(const uint8_t *data, size_t data_len, void *arg)
             // Allocate buffer from pool
             data_buffer_t *buf = buffer_alloc();
             if (buf == NULL) {
-                ESP_LOGW(TAG, "[FTDI] No buffer available, data dropped");
+                ESP_LOGW(TAG, "[FTDI] Buffer pool exhausted, dropped %d bytes", remaining);
                 break;
             }
 
@@ -1007,10 +1017,11 @@ static void ftdi_handle_rx(const uint8_t *data, size_t data_len, void *arg)
             memcpy(buf->data, data + offset, chunk_size);
             buf->len = chunk_size;
 
-            // Send buffer pointer to queue
-            if (xQueueSend(usb_to_tcp_queue, &buf, 0) != pdTRUE) {
-                ESP_LOGW(TAG, "[FTDI] USB→TCP queue full, data dropped");
-                buffer_free(buf);  // Free buffer if queue is full
+            // Send buffer pointer to queue.
+            // Block up to 2s to propagate backpressure to the USB device (flow control).
+            if (xQueueSend(usb_to_tcp_queue, &buf, pdMS_TO_TICKS(2000)) != pdTRUE) {
+                ESP_LOGW(TAG, "[FTDI] USB→TCP queue full after 2s, dropped %d bytes", remaining);
+                buffer_free(buf);
                 break;
             }
 
@@ -1127,43 +1138,6 @@ static void handle_cdc_device(device_info_t *dev_info)
     // Update mDNS status
     update_mdns_usb_status(true, dev_info->vid, dev_info->pid, "CDC");
 
-    // Print device descriptor
-    cdc_acm_host_desc_print(dev_info->handle.cdc_hdl);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test sending data
-    ESP_ERROR_CHECK(cdc_acm_host_data_tx_blocking(dev_info->handle.cdc_hdl,
-                                                   (const uint8_t *)EXAMPLE_TX_STRING,
-                                                   strlen(EXAMPLE_TX_STRING),
-                                                   EXAMPLE_TX_TIMEOUT_MS));
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test line coding: Get current, change to 9600 7N1, and read again
-    ESP_LOGI(TAG, "[CDC] Setting up line coding");
-
-    cdc_acm_line_coding_t line_coding;
-    ESP_ERROR_CHECK(cdc_acm_host_line_coding_get(dev_info->handle.cdc_hdl, &line_coding));
-    ESP_LOGI(TAG, "[CDC] Line Get: Rate: %"PRIu32", Stop bits: %"PRIu8", Parity: %"PRIu8", Databits: %"PRIu8"",
-             line_coding.dwDTERate, line_coding.bCharFormat, line_coding.bParityType, line_coding.bDataBits);
-
-    line_coding.dwDTERate = 9600;
-    line_coding.bDataBits = 7;
-    line_coding.bParityType = 1;
-    line_coding.bCharFormat = 1;
-    ESP_ERROR_CHECK(cdc_acm_host_line_coding_set(dev_info->handle.cdc_hdl, &line_coding));
-    ESP_LOGI(TAG, "[CDC] Line Set: Rate: %"PRIu32", Stop bits: %"PRIu8", Parity: %"PRIu8", Databits: %"PRIu8"",
-             line_coding.dwDTERate, line_coding.bCharFormat, line_coding.bParityType, line_coding.bDataBits);
-
-    ESP_ERROR_CHECK(cdc_acm_host_line_coding_get(dev_info->handle.cdc_hdl, &line_coding));
-    ESP_LOGI(TAG, "[CDC] Line Get: Rate: %"PRIu32", Stop bits: %"PRIu8", Parity: %"PRIu8", Databits: %"PRIu8"",
-             line_coding.dwDTERate, line_coding.bCharFormat, line_coding.bParityType, line_coding.bDataBits);
-
-    // Set control line state: DTR=1, RTS=0
-    ESP_ERROR_CHECK(cdc_acm_host_set_control_line_state(dev_info->handle.cdc_hdl, true, false));
-    ESP_LOGI(TAG, "[CDC] Control line state set: DTR=1, RTS=0");
-
-    ESP_LOGI(TAG, "[CDC] Example finished successfully! Waiting for disconnection...");
-
     // Release device mutex
     xSemaphoreGive(device_mutex);
 }
@@ -1201,45 +1175,6 @@ static void handle_ftdi_device(device_info_t *dev_info)
     update_mdns_usb_status(true, dev_info->vid, dev_info->pid, "FTDI");
 
     vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test sending data
-    ESP_ERROR_CHECK(ftdi_sio_host_data_tx_blocking(dev_info->handle.ftdi_hdl,
-                                                     (const uint8_t *)EXAMPLE_TX_STRING,
-                                                     strlen(EXAMPLE_TX_STRING),
-                                                     EXAMPLE_TX_TIMEOUT_MS));
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test line settings: Set 115200 baud, 7 data bits, odd parity, 1 stop bit
-    ESP_LOGI(TAG, "[FTDI] Setting up line configuration");
-
-    ESP_ERROR_CHECK(ftdi_sio_host_set_baudrate(dev_info->handle.ftdi_hdl, 115200));
-    ESP_LOGI(TAG, "[FTDI] Baudrate set to 115200");
-
-    ESP_ERROR_CHECK(ftdi_sio_host_set_line_property(dev_info->handle.ftdi_hdl,
-                                                      FTDI_DATA_BITS_7,
-                                                      FTDI_STOP_BITS_1,
-                                                      FTDI_PARITY_ODD));
-    ESP_LOGI(TAG, "[FTDI] Line property set: 7 data bits, odd parity, 1 stop bit");
-
-    // Test modem control: Set DTR=1, RTS=0
-    ESP_ERROR_CHECK(ftdi_sio_host_set_modem_control(dev_info->handle.ftdi_hdl, true, false));
-    ESP_LOGI(TAG, "[FTDI] Modem control set: DTR=1, RTS=0");
-
-    // Get modem status
-    ftdi_modem_status_t status;
-    ESP_ERROR_CHECK(ftdi_sio_host_get_modem_status(dev_info->handle.ftdi_hdl, &status));
-    ESP_LOGI(TAG, "[FTDI] Modem status: CTS=%d DSR=%d RI=%d CD=%d",
-             status.cts, status.dsr, status.ri, status.rlsd);
-
-    // Test modem control: Set DTR=0, RTS=0
-    ESP_ERROR_CHECK(ftdi_sio_host_set_modem_control(dev_info->handle.ftdi_hdl, false, false));
-    ESP_LOGI(TAG, "[FTDI] Modem control set: DTR=0, RTS=0");
-
-    // Set latency timer to 16ms (default is typically 16ms)
-    ESP_ERROR_CHECK(ftdi_sio_host_set_latency_timer(dev_info->handle.ftdi_hdl, 16));
-    ESP_LOGI(TAG, "[FTDI] Latency timer set to 16ms");
-
-    ESP_LOGI(TAG, "[FTDI] Example finished successfully! Waiting for disconnection...");
 
     // Release device mutex
     xSemaphoreGive(device_mutex);
@@ -1406,8 +1341,8 @@ void app_main(void)
 
     // Create queues for data bridging (stores buffer pointers)
     ESP_LOGI(TAG, "Creating data queues...");
-    usb_to_tcp_queue = xQueueCreate(8, sizeof(data_buffer_t*));
-    tcp_to_usb_queue = xQueueCreate(8, sizeof(data_buffer_t*));
+    usb_to_tcp_queue = xQueueCreate(32, sizeof(data_buffer_t*));
+    tcp_to_usb_queue = xQueueCreate(32, sizeof(data_buffer_t*));
     device_queue = xQueueCreate(4, sizeof(device_info_t));
 
     if (usb_to_tcp_queue == NULL || tcp_to_usb_queue == NULL || device_queue == NULL) {
@@ -1452,6 +1387,15 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to create control server task");
         return;
     }
+
+#ifdef CONFIG_RFC2217_ENABLE
+    // Start RFC2217 server
+    ESP_LOGI(TAG, "Starting RFC2217 server on port %d...", CONFIG_RFC2217_PORT);
+    esp_err_t rfc2217_err = rfc2217_server_init();
+    if (rfc2217_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to start RFC2217 server: %s", esp_err_to_name(rfc2217_err));
+    }
+#endif
 
     // Start bridge tasks
     ESP_LOGI(TAG, "Starting bridge tasks...");

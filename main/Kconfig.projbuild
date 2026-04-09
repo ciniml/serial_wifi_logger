@@ -56,9 +56,61 @@ menu "TCP Server Configuration"
     config DATA_BUFFER_POOL_SIZE
         int "Data Buffer Pool Size"
         range 4 64
-        default 16
+        default 64
         help
             Number of data buffers in the static buffer pool.
+
+endmenu
+
+menu "RFC2217 Configuration"
+
+    config RFC2217_ENABLE
+        bool "Enable RFC2217 Server"
+        default y
+        help
+            Enable RFC2217 (Telnet COM Port Control) server for
+            remote serial port access. Compatible with pyserial
+            rfc2217:// URL handler.
+
+    config RFC2217_PORT
+        int "RFC2217 Server Port"
+        depends on RFC2217_ENABLE
+        range 1 65535
+        default 2217
+        help
+            Port number for the RFC2217 server.
+            Standard port is 2217. pyserial defaults to this port.
+
+    config RFC2217_MODEM_POLL_INTERVAL_MS
+        int "Modem Status Poll Interval (ms)"
+        depends on RFC2217_ENABLE
+        range 50 1000
+        default 100
+        help
+            Interval for polling modem status (CTS/DSR/RI/CD).
+            Lower values provide faster response but use more CPU.
+            Note: Only FTDI devices support modem status reading.
+
+endmenu
+
+menu "Serial Control Configuration"
+
+    config SERIAL_CTRL_RETRY_INTERVAL_MS
+        int "Retry Interval (ms)"
+        range 1 100
+        default 10
+        help
+            Interval between retries when serial control operations
+            return ESP_ERR_NOT_FINISHED (device busy).
+
+    config SERIAL_CTRL_RETRY_COUNT
+        int "Retry Count"
+        range 1 50
+        default 10
+        help
+            Number of retries when serial control operations
+            return ESP_ERR_NOT_FINISHED. Total retry time is
+            approximately RETRY_INTERVAL_MS * RETRY_COUNT.
 
 endmenu
 
