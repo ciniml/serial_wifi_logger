@@ -69,6 +69,9 @@ idf_component_register(SRCS main.c
                             provisioning.c
                             version.c
                             ota_server.c
+                            rfc2217_protocol.c
+                            rfc2217_server.c
+                            serial_control.c
                     INCLUDE_DIRS "."
                     PRIV_REQUIRES espressif__usb_host_cdc_acm
                                   usb_host_ftdi_sio
