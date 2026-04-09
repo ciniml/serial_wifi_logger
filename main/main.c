@@ -58,8 +58,6 @@
 #endif
 
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
-#define EXAMPLE_TX_STRING           ("Auto-detect test string!")
-#define EXAMPLE_TX_TIMEOUT_MS       (1000)
 
 static const char *TAG = "USB-AUTO";
 
@@ -1140,43 +1138,6 @@ static void handle_cdc_device(device_info_t *dev_info)
     // Update mDNS status
     update_mdns_usb_status(true, dev_info->vid, dev_info->pid, "CDC");
 
-    // Print device descriptor
-    cdc_acm_host_desc_print(dev_info->handle.cdc_hdl);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test sending data
-    ESP_ERROR_CHECK(cdc_acm_host_data_tx_blocking(dev_info->handle.cdc_hdl,
-                                                   (const uint8_t *)EXAMPLE_TX_STRING,
-                                                   strlen(EXAMPLE_TX_STRING),
-                                                   EXAMPLE_TX_TIMEOUT_MS));
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test line coding: Get current, change to 9600 7N1, and read again
-    ESP_LOGI(TAG, "[CDC] Setting up line coding");
-
-    cdc_acm_line_coding_t line_coding;
-    ESP_ERROR_CHECK(cdc_acm_host_line_coding_get(dev_info->handle.cdc_hdl, &line_coding));
-    ESP_LOGI(TAG, "[CDC] Line Get: Rate: %"PRIu32", Stop bits: %"PRIu8", Parity: %"PRIu8", Databits: %"PRIu8"",
-             line_coding.dwDTERate, line_coding.bCharFormat, line_coding.bParityType, line_coding.bDataBits);
-
-    line_coding.dwDTERate = 9600;
-    line_coding.bDataBits = 7;
-    line_coding.bParityType = 1;
-    line_coding.bCharFormat = 1;
-    ESP_ERROR_CHECK(cdc_acm_host_line_coding_set(dev_info->handle.cdc_hdl, &line_coding));
-    ESP_LOGI(TAG, "[CDC] Line Set: Rate: %"PRIu32", Stop bits: %"PRIu8", Parity: %"PRIu8", Databits: %"PRIu8"",
-             line_coding.dwDTERate, line_coding.bCharFormat, line_coding.bParityType, line_coding.bDataBits);
-
-    ESP_ERROR_CHECK(cdc_acm_host_line_coding_get(dev_info->handle.cdc_hdl, &line_coding));
-    ESP_LOGI(TAG, "[CDC] Line Get: Rate: %"PRIu32", Stop bits: %"PRIu8", Parity: %"PRIu8", Databits: %"PRIu8"",
-             line_coding.dwDTERate, line_coding.bCharFormat, line_coding.bParityType, line_coding.bDataBits);
-
-    // Set control line state: DTR=1, RTS=0
-    ESP_ERROR_CHECK(cdc_acm_host_set_control_line_state(dev_info->handle.cdc_hdl, true, false));
-    ESP_LOGI(TAG, "[CDC] Control line state set: DTR=1, RTS=0");
-
-    ESP_LOGI(TAG, "[CDC] Example finished successfully! Waiting for disconnection...");
-
     // Release device mutex
     xSemaphoreGive(device_mutex);
 }
@@ -1214,45 +1175,6 @@ static void handle_ftdi_device(device_info_t *dev_info)
     update_mdns_usb_status(true, dev_info->vid, dev_info->pid, "FTDI");
 
     vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test sending data
-    ESP_ERROR_CHECK(ftdi_sio_host_data_tx_blocking(dev_info->handle.ftdi_hdl,
-                                                     (const uint8_t *)EXAMPLE_TX_STRING,
-                                                     strlen(EXAMPLE_TX_STRING),
-                                                     EXAMPLE_TX_TIMEOUT_MS));
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Test line settings: Set 115200 baud, 7 data bits, odd parity, 1 stop bit
-    ESP_LOGI(TAG, "[FTDI] Setting up line configuration");
-
-    ESP_ERROR_CHECK(ftdi_sio_host_set_baudrate(dev_info->handle.ftdi_hdl, 115200));
-    ESP_LOGI(TAG, "[FTDI] Baudrate set to 115200");
-
-    ESP_ERROR_CHECK(ftdi_sio_host_set_line_property(dev_info->handle.ftdi_hdl,
-                                                      FTDI_DATA_BITS_7,
-                                                      FTDI_STOP_BITS_1,
-                                                      FTDI_PARITY_ODD));
-    ESP_LOGI(TAG, "[FTDI] Line property set: 7 data bits, odd parity, 1 stop bit");
-
-    // Test modem control: Set DTR=1, RTS=0
-    ESP_ERROR_CHECK(ftdi_sio_host_set_modem_control(dev_info->handle.ftdi_hdl, true, false));
-    ESP_LOGI(TAG, "[FTDI] Modem control set: DTR=1, RTS=0");
-
-    // Get modem status
-    ftdi_modem_status_t status;
-    ESP_ERROR_CHECK(ftdi_sio_host_get_modem_status(dev_info->handle.ftdi_hdl, &status));
-    ESP_LOGI(TAG, "[FTDI] Modem status: CTS=%d DSR=%d RI=%d CD=%d",
-             status.cts, status.dsr, status.ri, status.rlsd);
-
-    // Test modem control: Set DTR=0, RTS=0
-    ESP_ERROR_CHECK(ftdi_sio_host_set_modem_control(dev_info->handle.ftdi_hdl, false, false));
-    ESP_LOGI(TAG, "[FTDI] Modem control set: DTR=0, RTS=0");
-
-    // Set latency timer to 16ms (default is typically 16ms)
-    ESP_ERROR_CHECK(ftdi_sio_host_set_latency_timer(dev_info->handle.ftdi_hdl, 16));
-    ESP_LOGI(TAG, "[FTDI] Latency timer set to 16ms");
-
-    ESP_LOGI(TAG, "[FTDI] Example finished successfully! Waiting for disconnection...");
 
     // Release device mutex
     xSemaphoreGive(device_mutex);
