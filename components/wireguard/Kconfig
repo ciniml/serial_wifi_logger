@@ -1,0 +1,89 @@
+menu "WireGuard VPN"
+
+    config WIREGUARD_ENABLE
+        bool "Enable WireGuard VPN"
+        default y
+        help
+            Enable WireGuard VPN support. The device will bring up a
+            WireGuard tunnel after WiFi connects.
+
+    config WIREGUARD_LOCAL_IP
+        string "Local WireGuard IP address"
+        depends on WIREGUARD_ENABLE
+        default "10.0.0.2"
+        help
+            IPv4 address assigned to the WireGuard interface (e.g. "10.0.0.2").
+            Can be overridden at runtime via NVS key "local_ip" in namespace "wireguard".
+
+    config WIREGUARD_LOCAL_NETMASK
+        string "Local WireGuard netmask"
+        depends on WIREGUARD_ENABLE
+        default "255.255.255.0"
+        help
+            Netmask for the WireGuard interface.
+            Can be overridden at runtime via NVS key "local_netmask".
+
+    config WIREGUARD_PRIVATE_KEY
+        string "Private key (base64)"
+        depends on WIREGUARD_ENABLE
+        default ""
+        help
+            Base64-encoded 32-byte WireGuard private key for this device.
+            Generate with: wg genkey
+            Can be overridden at runtime via NVS key "private_key".
+
+    config WIREGUARD_PEER_PUBLIC_KEY
+        string "Peer public key (base64)"
+        depends on WIREGUARD_ENABLE
+        default ""
+        help
+            Base64-encoded 32-byte public key of the WireGuard peer.
+            Can be overridden at runtime via NVS key "peer_pub_key".
+
+    config WIREGUARD_PEER_ENDPOINT
+        string "Peer endpoint hostname or IP"
+        depends on WIREGUARD_ENABLE
+        default ""
+        help
+            Hostname or IP address of the WireGuard server/peer.
+            Can be overridden at runtime via NVS key "peer_endpoint".
+
+    config WIREGUARD_PEER_PORT
+        int "Peer endpoint port"
+        depends on WIREGUARD_ENABLE
+        range 1 65535
+        default 51820
+        help
+            UDP port of the WireGuard peer.
+            Can be overridden at runtime via NVS key "peer_port" (u16).
+
+    config WIREGUARD_LISTEN_PORT
+        int "Local listen port"
+        depends on WIREGUARD_ENABLE
+        range 0 65535
+        default 51820
+        help
+            Local UDP port WireGuard listens on. 0 = ephemeral.
+            Can be overridden at runtime via NVS key "listen_port" (u16).
+
+    config WIREGUARD_KEEPALIVE
+        int "Persistent keepalive interval (seconds, 0=disabled)"
+        depends on WIREGUARD_ENABLE
+        range 0 65535
+        default 25
+        help
+            Persistent keepalive interval in seconds. 0 = disabled.
+            Can be overridden at runtime via NVS key "keepalive" (u16).
+
+    config WIREGUARD_SET_AS_DEFAULT_ROUTE
+        bool "Set WireGuard interface as default route"
+        depends on WIREGUARD_ENABLE
+        default n
+        help
+            If enabled, all unrouted traffic is sent through WireGuard (full tunnel).
+            For this serial bridge use case, leave DISABLED so TCP server traffic
+            (ports 8888, 8889, 2217) stays on the local WiFi interface and the device
+            remains reachable on the LAN. Enable only for full-tunnel deployments.
+            Can be overridden at runtime via NVS key "set_default" (u8, 0/1).
+
+endmenu

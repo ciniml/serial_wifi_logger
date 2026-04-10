@@ -81,6 +81,7 @@ idf_component_register(SRCS main.c
                                   nvs_flash
                                   esp_http_server
                                   app_update
+                                  wireguard
                     )
 
 # Add compile definitions for version information

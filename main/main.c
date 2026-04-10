@@ -57,6 +57,11 @@
 #include "rfc2217_server.h"
 #endif
 
+// WireGuard VPN
+#ifdef CONFIG_WIREGUARD_ENABLE
+#include "wireguard_esp32.h"
+#endif
+
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
 
 static const char *TAG = "USB-AUTO";
@@ -1330,6 +1335,16 @@ void app_main(void)
         if (ota_err != ESP_OK) {
             ESP_LOGE(TAG, "Failed to start OTA server: %s", esp_err_to_name(ota_err));
         }
+
+#ifdef CONFIG_WIREGUARD_ENABLE
+        // Start WireGuard VPN tunnel (config loaded from NVS, fallback to Kconfig)
+        // Note: NTP sync is recommended before this call for correct TAI64N timestamps.
+        ESP_LOGI(TAG, "Starting WireGuard VPN...");
+        esp_err_t wg_err = wireguard_esp32_start(NULL);
+        if (wg_err != ESP_OK) {
+            ESP_LOGE(TAG, "WireGuard start failed: %s (device continues without VPN)", esp_err_to_name(wg_err));
+        }
+#endif
     } else {
         ESP_LOGE(TAG, "Failed to connect to WiFi");
         return;
