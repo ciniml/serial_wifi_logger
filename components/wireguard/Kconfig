@@ -86,4 +86,27 @@ menu "WireGuard VPN"
             remains reachable on the LAN. Enable only for full-tunnel deployments.
             Can be overridden at runtime via NVS key "set_default" (u8, 0/1).
 
+    config WIREGUARD_NTP_SERVER
+        string "NTP server hostname"
+        depends on WIREGUARD_ENABLE
+        default "ntp1.mfeed.ad.jp"
+        help
+            NTP server used to synchronize the system clock before starting the
+            WireGuard tunnel. Accurate time is required for WireGuard's TAI64N
+            timestamp; without it the remote peer will reject handshakes after
+            a device reset.
+            mfeed (ntp1/ntp2/ntp3.mfeed.ad.jp) is the default public NTP service
+            widely used in Japan.
+            Can be overridden at runtime via NVS key "ntp_server" in namespace "wireguard".
+
+    config WIREGUARD_NTP_TIMEOUT_MS
+        int "NTP sync timeout (ms)"
+        depends on WIREGUARD_ENABLE
+        range 1000 60000
+        default 10000
+        help
+            Maximum time to wait for NTP synchronization before starting WireGuard.
+            If the timeout expires without sync, WireGuard starts anyway with the
+            current (potentially incorrect) system time and logs a warning.
+
 endmenu

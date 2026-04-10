@@ -13,6 +13,7 @@
 
 #include "esp_log.h"
 #include "esp_netif_ip_addr.h"  /* IPSTR / IP2STR */
+#include "esp_netif_sntp.h"     /* NTP synchronization */
 #include "nvs.h"
 
 #include "lwip/ip.h"
@@ -57,6 +58,7 @@ static bool          s_set_as_default = false;
 #define NVS_KEY_KEEPALIVE   "keepalive"
 #define NVS_KEY_SET_DEFAULT "set_default"
 #define NVS_KEY_PSK         "preshared_key"
+#define NVS_KEY_NTP_SERVER  "ntp_server"
 
 static char s_local_ip[16];
 static char s_local_netmask[16];
@@ -64,6 +66,7 @@ static char s_local_gateway[16];
 static char s_private_key[64];       /* base64 WG key = 44 chars + NUL, with margin */
 static char s_peer_public_key[64];
 static char s_peer_endpoint[64];
+static char s_ntp_server[64];
 static uint8_t s_preshared_key[32];
 static bool s_has_preshared_key = false;
 
@@ -97,6 +100,7 @@ static void load_config_from_nvs(wireguard_config_t *cfg)
     LOAD_STR(s_private_key,     NVS_KEY_PRIV_KEY,    CONFIG_WIREGUARD_PRIVATE_KEY);
     LOAD_STR(s_peer_public_key, NVS_KEY_PEER_PUBKEY, CONFIG_WIREGUARD_PEER_PUBLIC_KEY);
     LOAD_STR(s_peer_endpoint,   NVS_KEY_ENDPOINT,    CONFIG_WIREGUARD_PEER_ENDPOINT);
+    LOAD_STR(s_ntp_server,      NVS_KEY_NTP_SERVER,  CONFIG_WIREGUARD_NTP_SERVER);
 
     LOAD_U16(cfg->peer_port,   NVS_KEY_PEER_PORT,   CONFIG_WIREGUARD_PEER_PORT);
     LOAD_U16(cfg->listen_port, NVS_KEY_LISTEN_PORT, CONFIG_WIREGUARD_LISTEN_PORT);
@@ -139,6 +143,30 @@ static void load_config_from_nvs(wireguard_config_t *cfg)
 }
 
 /* --------------------------------------------------------------------------
+ * NTP synchronization
+ * -------------------------------------------------------------------------- */
+
+static void sync_ntp(const char *server, uint32_t timeout_ms)
+{
+    ESP_LOGI(TAG, "Synchronizing time via NTP server: %s (timeout %"PRIu32" ms)", server, timeout_ms);
+
+    esp_sntp_config_t sntp_cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG(server);
+    esp_netif_sntp_init(&sntp_cfg);
+
+    esp_err_t ret = esp_netif_sntp_sync_wait(pdMS_TO_TICKS(timeout_ms));
+    if (ret == ESP_OK) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        ESP_LOGI(TAG, "NTP sync OK: unix time %lld", (long long)tv.tv_sec);
+    } else {
+        ESP_LOGW(TAG, "NTP sync timed out (%s) — WireGuard handshake may fail after reset",
+                 esp_err_to_name(ret));
+    }
+
+    esp_netif_sntp_deinit();
+}
+
+/* --------------------------------------------------------------------------
  * Public API
  * -------------------------------------------------------------------------- */
 
@@ -151,12 +179,17 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
 
     /* 1. Resolve config: caller-provided or load from NVS + Kconfig */
     wireguard_config_t local_cfg;
+    const char *ntp_server = CONFIG_WIREGUARD_NTP_SERVER;
     if (config == NULL) {
         load_config_from_nvs(&local_cfg);
         config = &local_cfg;
+        ntp_server = s_ntp_server;
     }
 
-    /* 2. Validate mandatory fields */
+    /* 2. NTP time synchronization (required for TAI64N timestamps) */
+    sync_ntp(ntp_server, CONFIG_WIREGUARD_NTP_TIMEOUT_MS);
+
+    /* 3. Validate mandatory fields */
     if (!config->private_key || config->private_key[0] == '\0') {
         ESP_LOGE(TAG, "WireGuard private key not configured");
         return ESP_ERR_INVALID_ARG;
@@ -170,7 +203,7 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 3. DNS resolve peer endpoint with retries */
+    /* 4. DNS resolve peer endpoint with retries */
     ip_addr_t endpoint_ip = IPADDR4_INIT_BYTES(0, 0, 0, 0);
     bool resolved = false;
     for (int retry = 0; retry < 5 && !resolved; retry++) {
