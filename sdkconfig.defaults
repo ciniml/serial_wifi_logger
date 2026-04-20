@@ -1,5 +1,7 @@
 # Target Configuration
 CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
 
 # WiFi Provisioning
 CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y
@@ -25,6 +27,14 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_HTTPD_WS_SUPPORT=n
+
+# lwIP: Enable LWIP_ESP_NETIF_DATA so netif->state is available for raw lwIP
+# netifs (e.g. WireGuard) without conflicting with esp_netif's internal pointer.
+# Without this, esp_netif_internal_dhcpc_cb() casts netif->state as esp_netif_t*
+# and crashes when WireGuard stores its own device context there.
+# CONFIG_LWIP_PPP_SUPPORT triggers LWIP_ESP_NETIF_DATA=1 in lwipopts.h;
+# no PPP interface is actually created — this is purely a build-time switch.
+CONFIG_LWIP_PPP_SUPPORT=y
 
 # Custom UART configuration for logging
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y

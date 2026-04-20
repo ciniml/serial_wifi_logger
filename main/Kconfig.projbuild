@@ -160,12 +160,12 @@ menu "OTA Update Configuration"
 
     config OTA_MAX_UPLOAD_SIZE
         int "Maximum Firmware Size (bytes)"
-        range 524288 983040
-        default 983040
+        range 524288 1048576
+        default 1048576
         help
-            Maximum firmware size in bytes (960 KB default).
+            Maximum firmware size in bytes (1 MB default).
             This prevents uploading firmware larger than the OTA partition.
-            Must not exceed the size of ota_0/ota_1 partitions (0xF0000 = 983040 bytes).
+            Must not exceed the size of ota_0/ota_1 partitions (0x100000 = 1048576 bytes).
 
     config OTA_ENABLE_ROLLBACK
         bool "Enable Automatic Rollback"

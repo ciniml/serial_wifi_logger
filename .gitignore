@@ -10,3 +10,6 @@ firmware.bin
 
 # Release artifacts
 release/
+
+# WireGuard test keys (contain private keys — never commit)
+script/wireguard/keys/
