@@ -39,6 +39,15 @@
 #include "lwip/netdb.h"
 #include "esp_netif.h"
 
+// Ethernet (QEMU open_eth testing)
+#ifdef CONFIG_QEMU_TEST
+#include "esp_eth.h"
+#include "esp_eth_mac.h"
+#include "esp_eth_mac_openeth.h"
+#include "esp_eth_phy.h"
+#include "esp_eth_netif_glue.h"
+#endif
+
 // Version information
 #include "version.h"
 
@@ -57,8 +66,10 @@
 #include "rfc2217_server.h"
 #endif
 
-// WireGuard VPN
-#ifdef CONFIG_WIREGUARD_ENABLE
+// WireGuard VPN / Tailscale
+#ifdef CONFIG_TAILSCALE_ENABLE
+#include "tailscale_esp32.h"
+#elif defined(CONFIG_WIREGUARD_ENABLE)
 #include "wireguard_esp32.h"
 #endif
 
@@ -1227,6 +1238,52 @@ static void handle_device(device_info_t *dev_info)
     ESP_LOGI(TAG, "Device disconnected, ready for next device");
 }
 
+// ============= QEMU ETHERNET (TEST MODE) =============
+
+#ifdef CONFIG_QEMU_TEST
+static void eth_event_handler(void *arg, esp_event_base_t event_base,
+                               int32_t event_id, void *event_data)
+{
+    if (event_base == ETH_EVENT && event_id == ETHERNET_EVENT_CONNECTED) {
+        ESP_LOGI(TAG, "Ethernet link up");
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_ETH_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
+        ESP_LOGI(TAG, "Ethernet got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+static esp_err_t qemu_eth_init(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    esp_netif_config_t netif_cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&netif_cfg);
+
+    eth_mac_config_t mac_cfg = ETH_MAC_DEFAULT_CONFIG();
+    eth_phy_config_t phy_cfg = ETH_PHY_DEFAULT_CONFIG();
+    phy_cfg.phy_addr = 1;
+    phy_cfg.reset_gpio_num = -1;
+
+    esp_eth_mac_t *mac = esp_eth_mac_new_openeth(&mac_cfg);
+    esp_eth_phy_t *phy = esp_eth_phy_new_generic(&phy_cfg);
+
+    esp_eth_config_t eth_cfg = ETH_DEFAULT_CONFIG(mac, phy);
+    esp_eth_handle_t eth_handle = NULL;
+    ESP_ERROR_CHECK(esp_eth_driver_install(&eth_cfg, &eth_handle));
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+
+    ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID,
+                                               &eth_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP,
+                                               &eth_event_handler, NULL));
+
+    ESP_ERROR_CHECK(esp_eth_start(eth_handle));
+    return ESP_OK;
+}
+#endif
+
 // ============= MAIN APPLICATION =============
 
 /**
@@ -1248,6 +1305,18 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
+    wifi_event_group = xEventGroupCreate();
+
+#ifdef CONFIG_QEMU_TEST
+    // QEMU mode: use open_eth Ethernet driver instead of WiFi
+    ESP_LOGI(TAG, "QEMU test mode: initializing Ethernet (open_eth)");
+    ESP_ERROR_CHECK(qemu_eth_init());
+
+    ESP_LOGI(TAG, "Waiting for Ethernet IP...");
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                            WIFI_CONNECTED_BIT,
+                                            pdFALSE, pdFALSE, portMAX_DELAY);
+#else
     // 2. Initialize WiFi (required before provisioning check)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -1256,13 +1325,9 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    wifi_event_group = xEventGroupCreate();
-
     // 4. Initialize provisioning manager
     ESP_LOGI(TAG, "Initializing provisioning manager...");
     ESP_ERROR_CHECK(init_provisioning_manager());
-
-    
 
     // Register WiFi event handlers
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
@@ -1310,9 +1375,14 @@ void app_main(void)
     EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
                                             WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
                                             pdFALSE, pdFALSE, portMAX_DELAY);
+#endif /* CONFIG_QEMU_TEST */
 
     if (bits & WIFI_CONNECTED_BIT) {
+#ifdef CONFIG_QEMU_TEST
+        ESP_LOGI(TAG, "Network ready (Ethernet)");
+#else
         ESP_LOGI(TAG, "Connected to WiFi");
+#endif
 
         // Check OTA rollback status
         const esp_partition_t *running = esp_ota_get_running_partition();
@@ -1325,9 +1395,11 @@ void app_main(void)
         }
         ESP_LOGI(TAG, "Running from partition: %s", running->label);
 
+#ifndef CONFIG_QEMU_TEST
         // Initialize mDNS service
         ESP_LOGI(TAG, "Initializing mDNS service...");
         init_mdns();
+#endif
 
         // Initialize OTA HTTP server
         ESP_LOGI(TAG, "Initializing OTA HTTP server...");
@@ -1336,17 +1408,30 @@ void app_main(void)
             ESP_LOGE(TAG, "Failed to start OTA server: %s", esp_err_to_name(ota_err));
         }
 
-#ifdef CONFIG_WIREGUARD_ENABLE
+#ifdef CONFIG_TAILSCALE_ENABLE
+        // Start Tailscale client (uses WireGuard data plane internally)
+        ESP_LOGI(TAG, "Starting Tailscale client...");
+        esp_err_t ts_err = tailscale_esp32_start(NULL);
+        if (ts_err != ESP_OK) {
+            ESP_LOGE(TAG, "Tailscale start failed: %s (device continues without VPN)",
+                     esp_err_to_name(ts_err));
+        }
+#elif defined(CONFIG_WIREGUARD_ENABLE)
         // Start WireGuard VPN tunnel (config loaded from NVS, fallback to Kconfig)
         // Note: NTP sync is recommended before this call for correct TAI64N timestamps.
         ESP_LOGI(TAG, "Starting WireGuard VPN...");
         esp_err_t wg_err = wireguard_esp32_start(NULL);
         if (wg_err != ESP_OK) {
-            ESP_LOGE(TAG, "WireGuard start failed: %s (device continues without VPN)", esp_err_to_name(wg_err));
+            ESP_LOGE(TAG, "WireGuard start failed: %s (device continues without VPN)",
+                     esp_err_to_name(wg_err));
         }
 #endif
     } else {
+#ifdef CONFIG_QEMU_TEST
+        ESP_LOGE(TAG, "Failed to get Ethernet IP");
+#else
         ESP_LOGE(TAG, "Failed to connect to WiFi");
+#endif
         return;
     }
 
@@ -1426,6 +1511,7 @@ void app_main(void)
         return;
     }
 
+#ifndef CONFIG_QEMU_TEST
     // Install USB Host driver (shared by both drivers)
     ESP_LOGI(TAG, "Installing USB Host");
     const usb_host_config_t host_config = {
@@ -1475,4 +1561,11 @@ void app_main(void)
             handle_device(&dev_info);
         }
     }
+#else
+    ESP_LOGI(TAG, "QEMU test mode: Tailscale running, no USB host.");
+    // In QEMU mode, just idle — Tailscale tasks run independently
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
+#endif
 }

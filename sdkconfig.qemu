@@ -1,0 +1,24 @@
+# QEMU test overrides (applied on top of sdkconfig.defaults)
+# Usage: idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.qemu" build
+
+# Enable Tailscale (and its WireGuard data plane)
+CONFIG_TAILSCALE_ENABLE=y
+
+# QEMU test mode: use Ethernet (open_eth) instead of WiFi
+CONFIG_QEMU_TEST=y
+
+# Ethernet driver: OpenETH (QEMU open_eth NIC)
+CONFIG_ETH_ENABLED=y
+CONFIG_ETH_USE_OPENETH=y
+CONFIG_ETH_OPENETH_PHY_DP83848=y
+
+# Console: UART0 only (no USB JTAG in QEMU)
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED=n
+CONFIG_ESP_CONSOLE_UART=y
+CONFIG_ESP_CONSOLE_UART_CUSTOM=n
+
+# Use default UART pins (QEMU has no GPIO remapping)
+CONFIG_ESP_CONSOLE_UART_NUM=0
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200

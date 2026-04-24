@@ -77,11 +77,13 @@ idf_component_register(SRCS main.c
                                   usb_host_ftdi_sio
                                   espressif__mdns
                                   esp_wifi
+                                  esp_eth
                                   lwip
                                   nvs_flash
                                   esp_http_server
                                   app_update
                                   wireguard
+                                  tailscale
                     )
 
 # Add compile definitions for version information

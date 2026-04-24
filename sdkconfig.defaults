@@ -36,6 +36,18 @@ CONFIG_HTTPD_WS_SUPPORT=n
 # no PPP interface is actually created — this is purely a build-time switch.
 CONFIG_LWIP_PPP_SUPPORT=y
 
+# Tailscale / WireGuard: increase max peers for managed mode
+# When TAILSCALE_ENABLE=y, WIREGUARD_MAX_PEERS is set to 8 via Kconfig select.
+# For standalone WireGuard (no Tailscale), this stays at the default of 1.
+
+# TLS CA store: needed for HTTPS connections to login.tailscale.com and DERP servers
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Increase TLS handshake buffer for large certificates from CDN-hosted DERP servers
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
 # Custom UART configuration for logging
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y

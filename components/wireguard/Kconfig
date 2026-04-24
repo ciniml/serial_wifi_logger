@@ -109,4 +109,15 @@ menu "WireGuard VPN"
             If the timeout expires without sync, WireGuard starts anyway with the
             current (potentially incorrect) system time and logs a warning.
 
+    config WIREGUARD_MAX_PEERS
+        int "Maximum number of WireGuard peers"
+        depends on WIREGUARD_ENABLE
+        range 1 16
+        default 1
+        help
+            Maximum number of WireGuard peers that can be active simultaneously.
+            Each peer consumes approximately 800 bytes of SRAM.
+            Set to 1 for normal single-peer WireGuard use.
+            Increase (e.g. to 8) when using managed mode with Tailscale.
+
 endmenu

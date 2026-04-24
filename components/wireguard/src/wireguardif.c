@@ -34,6 +34,7 @@
  */
 
 #include "wireguardif.h"
+#include "wireguard_esp32.h"  /* for wireguard_derp_output_fn / wireguard_esp32_set_derp_output */
 
 #include <string.h>
 #include <stdlib.h>
@@ -68,6 +69,18 @@ void handshake_destroy(struct wireguard_handshake *handshake);
 
 #define TAG "[WireGuard] "
 
+/* DERP relay output callback (set by Tailscale component) */
+static wireguard_derp_output_fn s_derp_output_fn = NULL;
+
+void wireguard_esp32_set_derp_output(wireguard_derp_output_fn fn)
+{
+    s_derp_output_fn = fn;
+}
+
+/* DERP pseudo-address range: 127.3.3.0/24 (host-order) */
+#define DERP_PSEUDO_NET  0x7F030300u
+#define DERP_PSEUDO_MASK 0xFFFFFF00u
+
 static void update_peer_addr(struct wireguard_peer *peer, const ip_addr_t *addr, u16_t port) {
 	peer->ip = *addr;
 	peer->port = port;
@@ -98,8 +111,20 @@ static bool wireguardif_can_send_initiation(struct wireguard_peer *peer) {
 
 static err_t wireguardif_peer_output(struct netif *netif, struct pbuf *q, struct wireguard_peer *peer) {
 	struct wireguard_device *device = (struct wireguard_device *)netif->state;
-	// Send to last know port, not the connect port
-	//TODO: Support DSCP and ECN - lwip requires this set on PCB globally, not per packet
+
+	/* Route DERP pseudo-address (127.3.3.0/24) through the DERP callback */
+	if (s_derp_output_fn) {
+		const ip4_addr_t *ip4 = ip_2_ip4(&peer->ip);
+		if (ip4 && ((ntohl(ip4->addr) & DERP_PSEUDO_MASK) == DERP_PSEUDO_NET)) {
+			uint8_t buf[1500];
+			u16_t len = q->tot_len;
+			if (len <= sizeof(buf) && pbuf_copy_partial(q, buf, len, 0) == len) {
+				s_derp_output_fn(peer->public_key, buf, len);
+			}
+			return ERR_OK;
+		}
+	}
+
 	return udp_sendto_if(device->udp_pcb, q, &peer->ip, peer->port, device->underlying_netif);
 }
 

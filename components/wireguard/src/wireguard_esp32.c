@@ -7,6 +7,8 @@
 #include "wireguard_esp32.h"
 #include "wireguardif.h"
 #include "wireguard-platform.h"
+#include "wireguard.h"
+#include "crypto.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -41,6 +43,13 @@ static struct netif *s_prev_default_netif = NULL;
 static uint8_t       s_peer_index = WIREGUARDIF_INVALID_INDEX;
 static bool          s_initialized = false;
 static bool          s_set_as_default = false;
+static bool          s_managed = false;
+static uint8_t       s_wg_private_key[WIREGUARD_PRIVATE_KEY_LEN];
+static uint8_t       s_wg_public_key[WIREGUARD_PUBLIC_KEY_LEN];
+static char          s_managed_priv_b64[64]; /* base64 private key for wireguardif_init */
+
+/* curve25519 base point: u = 9 */
+static const uint8_t s_basepoint[32] = { 9 };
 
 /* --------------------------------------------------------------------------
  * NVS config loading
@@ -186,10 +195,23 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
         ntp_server = s_ntp_server;
     }
 
-    /* 2. NTP time synchronization (required for TAI64N timestamps) */
+    /* 2. Decode private key and derive public key into shared buffers */
+    {
+        size_t key_len = sizeof(s_wg_private_key);
+        if (wireguard_base64_decode(config->private_key, s_wg_private_key, &key_len)
+                && key_len == WIREGUARD_PRIVATE_KEY_LEN) {
+            wireguard_x25519(s_wg_public_key, s_wg_private_key, s_basepoint);
+        } else {
+            /* Non-fatal: keys may still be read from wireguard internals */
+            memset(s_wg_private_key, 0, sizeof(s_wg_private_key));
+            memset(s_wg_public_key,  0, sizeof(s_wg_public_key));
+        }
+    }
+
+    /* 3. NTP time synchronization (required for TAI64N timestamps) */
     sync_ntp(ntp_server, CONFIG_WIREGUARD_NTP_TIMEOUT_MS);
 
-    /* 3. Validate mandatory fields */
+    /* 4. Validate mandatory fields */
     if (!config->private_key || config->private_key[0] == '\0') {
         ESP_LOGE(TAG, "WireGuard private key not configured");
         return ESP_ERR_INVALID_ARG;
@@ -203,7 +225,7 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* 4. DNS resolve peer endpoint with retries */
+    /* 5. DNS resolve peer endpoint with retries */
     ip_addr_t endpoint_ip = IPADDR4_INIT_BYTES(0, 0, 0, 0);
     bool resolved = false;
     for (int retry = 0; retry < 5 && !resolved; retry++) {
@@ -225,23 +247,23 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
     }
     ESP_LOGI(TAG, "Peer endpoint %s -> " IPSTR, config->peer_endpoint, IP2STR(ip_2_ip4(&endpoint_ip)));
 
-    /* 4. Initialise WireGuard platform (entropy/RNG) */
+    /* 6. Initialise WireGuard platform (entropy/RNG) */
     wireguard_platform_init();
 
-    /* 5. Build wireguardif init data */
+    /* 7. Build wireguardif init data */
     struct wireguardif_init_data wg_init = {
         .private_key = config->private_key,
         .listen_port = config->listen_port,
         .bind_netif  = NULL,
     };
 
-    /* 6. Convert IP strings to lwIP address types */
+    /* 8. Convert IP strings to lwIP address types */
     ip4_addr_t ipaddr4, netmask4, gateway4;
     ip4addr_aton(config->local_ip,      &ipaddr4);
     ip4addr_aton(config->local_netmask, &netmask4);
     ip4addr_aton(config->local_gateway, &gateway4);
 
-    /* 7. Add WireGuard netif.
+    /* 9. Add WireGuard netif.
      *    Use tcpip_input (not ip_input) for ESP-IDF 5+/6+ — packets must
      *    enter the TCP/IP stack via the tcpip thread dispatcher.          */
     s_wg_netif = netif_add(&s_wg_netif_struct,
@@ -257,7 +279,7 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
     }
     netif_set_up(s_wg_netif);
 
-    /* 8. Configure and add peer */
+    /* 10. Configure and add peer */
     struct wireguardif_peer peer;
     wireguardif_peer_init(&peer);
     peer.public_key    = config->peer_public_key;
@@ -277,10 +299,10 @@ esp_err_t wireguard_esp32_start(const wireguard_config_t *config)
         return ESP_FAIL;
     }
 
-    /* 9. Initiate outbound handshake */
+    /* 11. Initiate outbound handshake */
     wireguardif_connect(s_wg_netif, s_peer_index);
 
-    /* 10. Optionally set as default route */
+    /* 12. Optionally set as default route */
     s_set_as_default = config->set_as_default;
     if (s_set_as_default) {
         s_prev_default_netif = netif_default;
@@ -326,4 +348,200 @@ bool wireguard_esp32_is_peer_up(void)
     ip_addr_t peer_ip;
     uint16_t peer_port;
     return (wireguardif_peer_is_up(s_wg_netif, s_peer_index, &peer_ip, &peer_port) == ERR_OK);
+}
+
+/* --------------------------------------------------------------------------
+ * Managed-mode API
+ * -------------------------------------------------------------------------- */
+
+esp_err_t wireguard_esp32_start_managed(const char *private_key_b64,
+                                        const char *local_ip,
+                                        const char *local_netmask,
+                                        uint16_t    listen_port)
+{
+    if (s_initialized) {
+        ESP_LOGW(TAG, "WireGuard already started");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (private_key_b64 != NULL) {
+        /* Decode caller-provided base64 private key */
+        size_t key_len = sizeof(s_wg_private_key);
+        if (!wireguard_base64_decode(private_key_b64, s_wg_private_key, &key_len)
+                || key_len != WIREGUARD_PRIVATE_KEY_LEN) {
+            ESP_LOGE(TAG, "Invalid private key (bad base64 or wrong length)");
+            return ESP_ERR_INVALID_ARG;
+        }
+        strlcpy(s_managed_priv_b64, private_key_b64, sizeof(s_managed_priv_b64));
+    } else {
+        /* Generate a new curve25519 private key */
+        wireguard_random_bytes(s_wg_private_key, WIREGUARD_PRIVATE_KEY_LEN);
+        /* RFC 7748 clamping */
+        s_wg_private_key[0]  &= 248;
+        s_wg_private_key[31] &= 127;
+        s_wg_private_key[31] |= 64;
+        size_t b64_len = sizeof(s_managed_priv_b64);
+        if (!wireguard_base64_encode(s_wg_private_key, WIREGUARD_PRIVATE_KEY_LEN,
+                                     s_managed_priv_b64, &b64_len)) {
+            ESP_LOGE(TAG, "base64 encode failed for generated private key");
+            return ESP_FAIL;
+        }
+    }
+
+    /* Derive public key: pub = x25519(priv, basepoint_9) */
+    wireguard_x25519(s_wg_public_key, s_wg_private_key, s_basepoint);
+
+    /* Initialise WireGuard platform */
+    wireguard_platform_init();
+
+    /* Build wireguardif init data */
+    struct wireguardif_init_data wg_init = {
+        .private_key = s_managed_priv_b64,
+        .listen_port = listen_port,
+        .bind_netif  = NULL,
+    };
+
+    /* Parse local IP / netmask (default to 0.0.0.0 / 255.255.255.255) */
+    ip4_addr_t ipaddr4, netmask4, gateway4;
+    ip4addr_aton(local_ip      ? local_ip      : "0.0.0.0",       &ipaddr4);
+    ip4addr_aton(local_netmask ? local_netmask : "255.255.255.255", &netmask4);
+    ip4addr_aton("0.0.0.0", &gateway4);
+
+    s_wg_netif = netif_add(&s_wg_netif_struct,
+                           &ipaddr4, &netmask4, &gateway4,
+                           &wg_init,
+                           wireguardif_init,
+                           tcpip_input);
+    if (s_wg_netif == NULL) {
+        ESP_LOGE(TAG, "netif_add failed in managed mode — check private key");
+        return ESP_FAIL;
+    }
+    netif_set_up(s_wg_netif);
+
+    s_managed     = true;
+    s_initialized = true;
+    ESP_LOGI(TAG, "WireGuard managed mode started (listen_port=%d)", listen_port);
+    return ESP_OK;
+}
+
+esp_err_t wireguard_esp32_set_address(const char *local_ip,
+                                      const char *local_netmask)
+{
+    if (!s_initialized || !s_managed || s_wg_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ip4_addr_t ipaddr4, netmask4, gateway4;
+    ip4addr_aton(local_ip,      &ipaddr4);
+    ip4addr_aton(local_netmask, &netmask4);
+    ip4addr_aton("0.0.0.0",     &gateway4);
+    netif_set_addr(s_wg_netif, &ipaddr4, &netmask4, &gateway4);
+    ESP_LOGI(TAG, "WireGuard address updated: %s / %s", local_ip, local_netmask);
+    return ESP_OK;
+}
+
+esp_err_t wireguard_esp32_add_peer(const char      *public_key_b64,
+                                   const ip_addr_t *allowed_ip,
+                                   const ip_addr_t *allowed_mask,
+                                   const ip_addr_t *endpoint,
+                                   uint16_t         port,
+                                   uint16_t         keepalive,
+                                   uint8_t         *peer_index_out)
+{
+    if (!s_initialized || s_wg_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!public_key_b64 || !peer_index_out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    struct wireguardif_peer peer;
+    wireguardif_peer_init(&peer);
+    peer.public_key    = public_key_b64;
+    peer.preshared_key = NULL;
+    peer.endport_port  = port;
+    peer.keep_alive    = keepalive;
+
+    if (allowed_ip && !ip_addr_isany(allowed_ip)) {
+        peer.allowed_ip   = *allowed_ip;
+    } else {
+        ip_addr_set_zero_ip4(&peer.allowed_ip);
+    }
+    if (allowed_mask && !ip_addr_isany(allowed_mask)) {
+        peer.allowed_mask = *allowed_mask;
+    } else {
+        ip_addr_set_zero_ip4(&peer.allowed_mask);
+    }
+    if (endpoint && !ip_addr_isany(endpoint)) {
+        peer.endpoint_ip = *endpoint;
+    } else {
+        ip_addr_set_zero_ip4(&peer.endpoint_ip);
+    }
+
+    uint8_t idx = WIREGUARDIF_INVALID_INDEX;
+    wireguardif_add_peer(s_wg_netif, &peer, &idx);
+    if (idx == WIREGUARDIF_INVALID_INDEX) {
+        ESP_LOGE(TAG, "wireguardif_add_peer failed — max peers reached or bad key");
+        return ESP_FAIL;
+    }
+
+    /* Initiate outbound connection if an endpoint is known */
+    if (endpoint && !ip_addr_isany(endpoint) && port != 0) {
+        wireguardif_connect(s_wg_netif, idx);
+    }
+
+    *peer_index_out = idx;
+    ESP_LOGI(TAG, "WireGuard peer added: index=%d port=%d", idx, port);
+    return ESP_OK;
+}
+
+esp_err_t wireguard_esp32_update_endpoint(uint8_t          peer_index,
+                                          const ip_addr_t *new_endpoint,
+                                          uint16_t         new_port)
+{
+    if (!s_initialized || s_wg_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (peer_index == WIREGUARDIF_INVALID_INDEX || !new_endpoint) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    err_t err = wireguardif_update_endpoint(s_wg_netif, peer_index, new_endpoint, new_port);
+    if (err != ERR_OK) {
+        ESP_LOGE(TAG, "wireguardif_update_endpoint failed: %d", (int)err);
+        return ESP_FAIL;
+    }
+    /* Re-initiate connection toward the new endpoint */
+    wireguardif_connect(s_wg_netif, peer_index);
+    return ESP_OK;
+}
+
+esp_err_t wireguard_esp32_remove_peer(uint8_t peer_index)
+{
+    if (!s_initialized || s_wg_netif == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (peer_index == WIREGUARDIF_INVALID_INDEX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    wireguardif_disconnect(s_wg_netif, peer_index);
+    wireguardif_remove_peer(s_wg_netif, peer_index);
+    ESP_LOGI(TAG, "WireGuard peer removed: index=%d", peer_index);
+    return ESP_OK;
+}
+
+esp_err_t wireguard_esp32_get_pubkey(uint8_t pubkey_out[32])
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    memcpy(pubkey_out, s_wg_public_key, WIREGUARD_PUBLIC_KEY_LEN);
+    return ESP_OK;
+}
+
+esp_err_t wireguard_esp32_get_privkey(uint8_t privkey_out[32])
+{
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    memcpy(privkey_out, s_wg_private_key, WIREGUARD_PRIVATE_KEY_LEN);
+    return ESP_OK;
 }

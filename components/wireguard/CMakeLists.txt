@@ -8,6 +8,11 @@ if(CONFIG_WIREGUARD_ENABLE)
     # Note: PRIV_REQUIRES handles link-time deps; include dirs are added explicitly
     # below via target_include_directories to work around MINIMAL_BUILD include
     # propagation in ESP-IDF 6.0 beta.
+    #
+    # src/ and src/crypto/refc/ are also listed in INCLUDE_DIRS (not just
+    # PRIV_INCLUDE_DIRS) so that dependent components (e.g. tailscale) can
+    # #include "crypto.h", "wireguard.h", "wireguardif.h" and the crypto
+    # primitive headers (x25519.h, chacha20poly1305.h, blake2s.h) directly.
     idf_component_register(
         SRCS
             "src/wireguard.c"
@@ -18,8 +23,9 @@ if(CONFIG_WIREGUARD_ENABLE)
             "src/wireguard_esp32.c"
         INCLUDE_DIRS
             "include"
-        PRIV_INCLUDE_DIRS
             "src"
+            "src/crypto/refc"
+        PRIV_INCLUDE_DIRS
         PRIV_REQUIRES
             esp_netif
             lwip

@@ -148,6 +148,18 @@ menu "Network Provisioning Configuration"
 
 endmenu
 
+menu "QEMU Test Configuration"
+
+    config QEMU_TEST
+        bool "Build for QEMU testing (Ethernet instead of WiFi)"
+        default n
+        help
+            When enabled, the application uses esp_eth with open_eth driver
+            instead of WiFi. This allows testing on QEMU ESP32-S3 which does
+            not support WiFi emulation. USB host and mDNS are also skipped.
+
+endmenu
+
 menu "OTA Update Configuration"
 
     config OTA_HTTP_SERVER_PORT
