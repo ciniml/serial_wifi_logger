@@ -50,6 +50,13 @@ CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=8192
 # concurrent TCP state-machine access from app threads would corrupt pcbs.
 CONFIG_LWIP_TCPIP_CORE_LOCKING=y
 
+# Increase the system-wide socket pool. The default 10 is exhausted very
+# quickly when the HTTP server, two TLS sessions (control + DERP), the
+# RFC2217 / TCP-bridge / control listeners, and the browser's parallel
+# requests are all live at once — observed as `httpd_accept_conn: error in
+# accept (23)` (ENFILE) when loading the Web UI.
+CONFIG_LWIP_MAX_SOCKETS=16
+
 
 # TLS CA store: needed for HTTPS connections to login.tailscale.com and DERP servers
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

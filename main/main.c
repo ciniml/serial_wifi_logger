@@ -59,6 +59,7 @@
 
 // OTA server
 #include "ota_server.h"
+#include "web_settings.h"
 #include "esp_ota_ops.h"
 
 // RFC2217 server
@@ -66,11 +67,16 @@
 #include "rfc2217_server.h"
 #endif
 
-// WireGuard VPN / Tailscale
+// WireGuard VPN / Tailscale.
+// CONFIG_TAILSCALE_ENABLE selects CONFIG_WIREGUARD_ENABLE, so when Tailscale
+// is compiled in the WireGuard manual-mode entry points are also available;
+// runtime selection between them is driven by the NVS "enabled" flag, with
+// the Kconfig values acting as defaults.
+#ifdef CONFIG_WIREGUARD_ENABLE
+#include "wireguard_esp32.h"
+#endif
 #ifdef CONFIG_TAILSCALE_ENABLE
 #include "tailscale_esp32.h"
-#elif defined(CONFIG_WIREGUARD_ENABLE)
-#include "wireguard_esp32.h"
 #endif
 
 #define EXAMPLE_USB_HOST_PRIORITY   (20)
@@ -1408,22 +1414,57 @@ void app_main(void)
             ESP_LOGE(TAG, "Failed to start OTA server: %s", esp_err_to_name(ota_err));
         }
 
+#if defined(CONFIG_TAILSCALE_ENABLE) || defined(CONFIG_WIREGUARD_ENABLE)
+        {
+            /* Defaults: when Tailscale is compiled in we run it; otherwise
+             * fall through to WireGuard manual mode. NVS "enabled" flags
+             * (set via the Web UI) override these. */
 #ifdef CONFIG_TAILSCALE_ENABLE
-        // Start Tailscale client (uses WireGuard data plane internally)
-        ESP_LOGI(TAG, "Starting Tailscale client...");
-        esp_err_t ts_err = tailscale_esp32_start(NULL);
-        if (ts_err != ESP_OK) {
-            ESP_LOGE(TAG, "Tailscale start failed: %s (device continues without VPN)",
-                     esp_err_to_name(ts_err));
-        }
-#elif defined(CONFIG_WIREGUARD_ENABLE)
-        // Start WireGuard VPN tunnel (config loaded from NVS, fallback to Kconfig)
-        // Note: NTP sync is recommended before this call for correct TAI64N timestamps.
-        ESP_LOGI(TAG, "Starting WireGuard VPN...");
-        esp_err_t wg_err = wireguard_esp32_start(NULL);
-        if (wg_err != ESP_OK) {
-            ESP_LOGE(TAG, "WireGuard start failed: %s (device continues without VPN)",
-                     esp_err_to_name(wg_err));
+            const bool ts_default = true;
+            const bool wg_default = false;
+#else
+            const bool ts_default = false;
+            const bool wg_default = true;
+#endif
+            bool ts_en = false, wg_en = false;
+#ifdef CONFIG_TAILSCALE_ENABLE
+            ts_en = web_settings_get_enabled("tailscale", ts_default);
+#else
+            (void)ts_default;
+#endif
+            wg_en = web_settings_get_enabled("wireguard", wg_default);
+            ESP_LOGI(TAG, "VPN runtime flags from NVS: tailscale=%d, wireguard=%d",
+                     (int)ts_en, (int)wg_en);
+
+            /* Mutually exclusive at runtime: Tailscale also brings up WG in
+             * managed mode, so they cannot coexist on the same wg netif. */
+            if (ts_en && wg_en) {
+                ESP_LOGW(TAG, "Both Tailscale and WireGuard enabled in NVS — "
+                              "Tailscale wins (WG manual disabled this boot)");
+                wg_en = false;
+            }
+
+#ifdef CONFIG_TAILSCALE_ENABLE
+            if (ts_en) {
+                ESP_LOGI(TAG, "Starting Tailscale client (runtime-enabled)...");
+                esp_err_t err = tailscale_esp32_start(NULL);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "Tailscale start failed: %s — continuing without VPN",
+                             esp_err_to_name(err));
+                }
+            }
+#endif
+            if (wg_en) {
+                ESP_LOGI(TAG, "Starting WireGuard manual mode (runtime-enabled)...");
+                esp_err_t err = wireguard_esp32_start(NULL);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "WireGuard start failed: %s — continuing without VPN",
+                             esp_err_to_name(err));
+                }
+            }
+            if (!ts_en && !wg_en) {
+                ESP_LOGI(TAG, "VPN services disabled in NVS (set via Web UI to enable)");
+            }
         }
 #endif
     } else {

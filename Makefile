@@ -73,19 +73,25 @@ qemu-kill:
 # Boot QEMU in the background, redirect output to $(QEMU_LOG), and wait until
 # the device reaches DERP-connected state (or timeout). Idempotent: kills any
 # previous QEMU first and rebuilds.
-qemu-bg: qemu-kill build-qemu
+qemu-bg: qemu-kill build-qemu qemu-bg-norebuild
+
+# Like qemu-bg but skips the rebuild, so NVS / OTA partition persist across
+# restarts. Use this to verify config persistence after a settings change.
+.PHONY: qemu-bg-norebuild
+qemu-bg-norebuild:
+	@$(MAKE) -s qemu-kill
 	@rm -f $(QEMU_LOG)
 	@bash -c "nohup bash -c 'source $(IDF_EXPORTS) && idf.py -DSDKCONFIG_DEFAULTS=\"$(SDKCONFIG_QEMU)\" qemu' > $(QEMU_LOG) 2>&1 & disown"
 	@echo "QEMU starting in background; log: $(QEMU_LOG)"
 	@i=0; while [ $$i -lt $(QEMU_BOOT_TIMEOUT) ]; do \
 		sleep 1; i=$$((i+1)); \
-		if grep -q "DERP connected" $(QEMU_LOG) 2>/dev/null; then \
-			echo "QEMU ready ($${i}s, DERP connected)"; \
-			grep -E "$(STATUS_RE)" $(QEMU_LOG) | head -8; \
+		if grep -q "DERP connected\|VPN services disabled" $(QEMU_LOG) 2>/dev/null; then \
+			echo "QEMU ready (boot complete after $${i}s)"; \
+			grep -E "$(STATUS_RE)|VPN services" $(QEMU_LOG) | head -8; \
 			exit 0; \
 		fi; \
 	done; \
-	echo "WARNING: QEMU did not reach DERP-connected within $(QEMU_BOOT_TIMEOUT)s"; \
+	echo "WARNING: QEMU did not reach a known-ready state within $(QEMU_BOOT_TIMEOUT)s"; \
 	tail -10 $(QEMU_LOG); exit 1
 
 # Show ESP32 status / event lines from the running QEMU log.

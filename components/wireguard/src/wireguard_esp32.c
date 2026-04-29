@@ -331,8 +331,15 @@ esp_err_t wireguard_esp32_stop(void)
     wireguardif_disconnect(s_wg_netif, s_peer_index);
     wireguardif_remove_peer(s_wg_netif, s_peer_index);
     s_peer_index = WIREGUARDIF_INVALID_INDEX;
-    wireguardif_shutdown(s_wg_netif);
+    /* Order matters: netif_remove() triggers lwIP to abort any TCP pcbs that
+     * routed through this netif, which calls back into wireguardif_output()
+     * via netif->output. wireguardif_shutdown() frees the device state, so
+     * if we shutdown first the output callback would crash with NULL netif
+     * state. Remove the netif first while state is still valid, then free. */
+    netif_set_link_down(s_wg_netif);
+    netif_set_down(s_wg_netif);
     netif_remove(s_wg_netif);
+    wireguardif_shutdown(s_wg_netif);
     s_wg_netif = NULL;
 
     s_initialized = false;

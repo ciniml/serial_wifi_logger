@@ -239,6 +239,12 @@ static err_t wireguardif_output_to_peer(struct netif *netif, struct pbuf *q, con
 // The ipaddr here is the one inside the VPN which we use to lookup the correct peer/endpoint
 static err_t wireguardif_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ip4addr) {
 	struct wireguard_device *device = (struct wireguard_device *)netif->state;
+	if (!device) {
+		/* netif is in tear-down (state freed by wireguardif_shutdown) but
+		 * lwIP can still invoke output for a brief window — e.g. tcp_abort
+		 * triggered from netif_remove. Drop silently rather than crash. */
+		return ERR_RTE;
+	}
 	// Send to peer that matches dest IP
 	ip_addr_t ipaddr;
 	ip_addr_copy_from_ip4(ipaddr, *ip4addr);
