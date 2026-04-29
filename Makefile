@@ -30,7 +30,8 @@ require-probe-host:
 .PHONY: build build-qemu qemu qemu-kill qemu-bg qemu-events qemu-status \
         test-ping test-http test-tcp test-tsping \
         probe-ping probe-http probe-tcp probe-tsping \
-        require-probe-host clean
+        require-probe-host clean \
+        build-docker docker-shell docker-clean
 
 # Track which defaults set generated the current sdkconfig, so we
 # automatically regenerate it when switching between HW and QEMU builds
@@ -163,3 +164,61 @@ probe-tcp: require-probe-host
 
 clean:
 	bash -c "source $(IDF_EXPORTS) && idf.py fullclean"
+
+# --- Docker build (mirrors CI) -----------------------------------------
+# Builds the firmware inside the same image GitHub Actions uses
+# (espressif/idf:release-v6.0). Runs as the calling user/group so build
+# artifacts are not owned by root, and uses an isolated build dir +
+# sdkconfig so it does not clash with host-side `make build` / `make qemu`.
+DOCKER_IMAGE         ?= espressif/idf:release-v6.0
+DOCKER_WORKDIR       ?= /work
+DOCKER_BUILD_DIR     ?= build-docker
+DOCKER_SDKCONFIG     ?= sdkconfig.docker
+DOCKER_TARGET_CHIP   ?= esp32s3
+
+# Run a command inside the IDF Docker image.
+# - --user UID:GID: own the artifacts on the host
+# - HOME=/tmp: idf-component-manager / pip caches need a writable HOME
+#   and the user we map in has no entry under /home in the image
+# - safe.directory: avoid git's "dubious ownership" refusal under bind mounts
+define docker-run
+	docker run --rm -t \
+		-u $$(id -u):$$(id -g) \
+		-v "$(CURDIR):$(DOCKER_WORKDIR)" \
+		-w $(DOCKER_WORKDIR) \
+		-e HOME=/tmp \
+		-e CI=true \
+		$(DOCKER_IMAGE) \
+		bash -c '\
+			git config --global --add safe.directory "$(DOCKER_WORKDIR)" && \
+			. "$$IDF_PATH/export.sh" && \
+			$(1)'
+endef
+
+build-docker:
+	$(call docker-run, \
+		idf.py -B $(DOCKER_BUILD_DIR) -DSDKCONFIG=$(DOCKER_SDKCONFIG) \
+		       -DSDKCONFIG_DEFAULTS=sdkconfig.defaults \
+		       set-target $(DOCKER_TARGET_CHIP) && \
+		idf.py -B $(DOCKER_BUILD_DIR) -DSDKCONFIG=$(DOCKER_SDKCONFIG) \
+		       -DSDKCONFIG_DEFAULTS=sdkconfig.defaults build)
+
+docker-clean:
+	$(call docker-run, \
+		idf.py -B $(DOCKER_BUILD_DIR) -DSDKCONFIG=$(DOCKER_SDKCONFIG) \
+		       fullclean)
+	@rm -f $(DOCKER_SDKCONFIG)
+
+# Drop into an interactive shell in the IDF container with the IDF env set up.
+# Useful for ad-hoc invocation (e.g. `idf.py menuconfig`, `idf.py size`).
+docker-shell:
+	docker run --rm -it \
+		-u $$(id -u):$$(id -g) \
+		-v "$(CURDIR):$(DOCKER_WORKDIR)" \
+		-w $(DOCKER_WORKDIR) \
+		-e HOME=/tmp \
+		$(DOCKER_IMAGE) \
+		bash -c '\
+			git config --global --add safe.directory "$(DOCKER_WORKDIR)" && \
+			. "$$IDF_PATH/export.sh" && \
+			exec bash'

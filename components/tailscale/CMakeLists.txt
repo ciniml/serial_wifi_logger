@@ -37,6 +37,8 @@ if(CONFIG_TAILSCALE_ENABLE)
     target_include_directories(${COMPONENT_LIB} PRIVATE
         ${esp_tls_dir}
         ${mbedtls_dir}/mbedtls/include
+        ${mbedtls_dir}/mbedtls/tf-psa-crypto/include
+        ${mbedtls_dir}/mbedtls/tf-psa-crypto/drivers/builtin/include
         ${mbedtls_dir}/port/include
         ${mbedtls_dir}/esp_crt_bundle/include
         ${nvs_flash_dir}/include
