@@ -61,6 +61,21 @@ bool tailscale_esp32_is_connected(void);
  */
 esp_err_t tailscale_esp32_get_ip(char *ip_str, size_t ip_str_len);
 
+/**
+ * @brief Copy the most recent AuthURL reported by the control server.
+ *
+ * Populated when registration succeeds without a usable auth_key, in
+ * which case the device cannot send/receive Tailscale traffic until the
+ * URL is opened in a browser by an authorised tailnet member. The
+ * destination buffer is left as an empty string when no approval is
+ * pending.
+ *
+ * @param url_str      Destination buffer.
+ * @param url_str_len  Capacity of `url_str` in bytes (must be >= 1).
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG on a NULL/zero-size buffer.
+ */
+esp_err_t tailscale_esp32_get_auth_url(char *url_str, size_t url_str_len);
+
 #ifdef __cplusplus
 }
 #endif

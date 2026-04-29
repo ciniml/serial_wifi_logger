@@ -46,6 +46,18 @@ static const char *TAG = "ts_ctrl";
 static esp_tls_t *s_tls  = NULL;
 static bool       s_stop = false;
 
+/* When the control server responds with a non-empty `AuthURL` the device
+ * must be approved interactively at that URL before traffic can flow.
+ * Saved here so the Web UI / public API can surface it. Empty string when
+ * the device is approved (or no registration has been performed yet). */
+#define TS_AUTH_URL_MAX 192
+static char s_auth_url[TS_AUTH_URL_MAX];
+
+const char *ts_ctrl_get_auth_url(void)
+{
+    return s_auth_url;
+}
+
 static int tls_write(const uint8_t *buf, size_t len)
 {
     size_t written = 0;
@@ -902,8 +914,12 @@ esp_err_t ts_ctrl_register(ts_ctrl_ctx_t *ctx)
     }
 
     cJSON *auth_url = cJSON_GetObjectItemCaseSensitive(resp, "AuthURL");
-    if (cJSON_IsString(auth_url) && auth_url->valuestring[0] != '\0')
+    if (cJSON_IsString(auth_url) && auth_url->valuestring[0] != '\0') {
         ESP_LOGW(TAG, "Needs approval: %s", auth_url->valuestring);
+        strlcpy(s_auth_url, auth_url->valuestring, sizeof(s_auth_url));
+    } else {
+        s_auth_url[0] = '\0';
+    }
 
     ctx->registered = true;
     cJSON_Delete(resp);

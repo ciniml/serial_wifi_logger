@@ -67,3 +67,16 @@ void ts_ctrl_poll_loop(ts_ctrl_ctx_t *ctx);
  * @brief Signal the control poll loop to exit and close the TLS connection.
  */
 void ts_ctrl_stop(ts_ctrl_ctx_t *ctx);
+
+/**
+ * @brief Return the most recent AuthURL the control server reported.
+ *
+ * Non-empty when the device's registration is awaiting interactive
+ * approval (i.e. when no auth_key was supplied or the key was invalid /
+ * already consumed). Empty string when the device is approved or no
+ * registration attempt has been made yet.
+ *
+ * The returned pointer references a static buffer owned by this module
+ * and is only valid until the next ts_ctrl_register() call.
+ */
+const char *ts_ctrl_get_auth_url(void);
