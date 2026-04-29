@@ -576,8 +576,16 @@ static int map_data_read(ts_ctrl_ctx_t *ctx, uint8_t *out, size_t need)
     return (int)total;
 }
 
-/* Read one [4B LE length][body] segment from the map DATA stream */
-/* Returns a malloc'd, NUL-terminated buffer on success; caller must free(). */
+/* Persistent reusable buffer for MapResponse segments. Allocated lazily on
+ * the first call, then grown as needed, and never freed: this avoids heap
+ * fragmentation that becomes fatal once the large initial DERPMap-bearing
+ * segment must coexist with WiFi/TLS/WG/DERP allocations. */
+static char  *s_map_persistent_buf  = NULL;
+static size_t s_map_persistent_size = 0;
+
+/* Read one [4B LE length][body] segment from the map DATA stream into the
+ * persistent buffer. The returned pointer is owned by this module — do NOT
+ * free() it; it stays valid until the next call to map_read_one. */
 static esp_err_t map_read_one(ts_ctrl_ctx_t *ctx,
                                char **buf_out, size_t *len_out)
 {
@@ -591,13 +599,33 @@ static esp_err_t map_read_one(ts_ctrl_ctx_t *ctx,
         ESP_LOGE(TAG, "Map segment length invalid: %"PRIu32, msg_len);
         return ESP_ERR_INVALID_RESPONSE;
     }
-    char *buf = malloc(msg_len + 1);
-    if (!buf) { ESP_LOGE(TAG, "Map alloc OOM (%"PRIu32" B)", msg_len); return ESP_ERR_NO_MEM; }
-    if (map_data_read(ctx, (uint8_t *)buf, msg_len) != (int)msg_len) {
-        free(buf); return ESP_FAIL;
+
+    /* Grow persistent buffer if needed. We only ever grow, never shrink, so
+     * once we've successfully held the largest segment we never re-fragment. */
+    if (msg_len + 1 > s_map_persistent_size) {
+        char *grown = realloc(s_map_persistent_buf, msg_len + 1);
+        if (!grown) {
+            ESP_LOGE(TAG, "Map buffer realloc OOM (need %"PRIu32" B); draining segment",
+                     msg_len + 1);
+            /* Drain msg_len bytes from the stream so subsequent reads stay
+             * aligned on the next 4-byte length prefix. */
+            uint8_t dump[256];
+            uint32_t left = msg_len;
+            while (left > 0) {
+                uint32_t n = left > sizeof(dump) ? sizeof(dump) : left;
+                if (map_data_read(ctx, dump, n) != (int)n) return ESP_FAIL;
+                left -= n;
+            }
+            return ESP_ERR_NO_MEM;
+        }
+        s_map_persistent_buf  = grown;
+        s_map_persistent_size = msg_len + 1;
     }
-    buf[msg_len] = '\0';
-    *buf_out = buf;
+
+    if (map_data_read(ctx, (uint8_t *)s_map_persistent_buf, msg_len) != (int)msg_len)
+        return ESP_FAIL;
+    s_map_persistent_buf[msg_len] = '\0';
+    *buf_out = s_map_persistent_buf;
     *len_out = msg_len;
     return ESP_OK;
 }
@@ -994,7 +1022,7 @@ esp_err_t ts_ctrl_map_request(ts_ctrl_ctx_t *ctx)
 
     ESP_LOGI(TAG, "MapResponse segment (%u B)", (unsigned)map_len);
     esp_err_t apply_err = ts_netmap_apply(map_buf, map_len);
-    free(map_buf);
+    /* map_buf is owned by map_read_one's persistent buffer — do NOT free. */
 
     /* Connect to DERP home server identified in the map response */
     ts_derp_node_t derp_home;
@@ -1017,7 +1045,10 @@ void ts_ctrl_poll_loop(ts_ctrl_ctx_t *ctx)
         size_t map_len = 0;
         esp_err_t err = map_read_one(ctx, &map_buf, &map_len);
         if (err != ESP_OK) {
-            free(map_buf);
+            /* OOM is recoverable — map_read_one drained the segment from the
+             * stream so the next length-prefix is still aligned. Other errors
+             * are fatal for this connection. */
+            if (err == ESP_ERR_NO_MEM) continue;
             if (s_stop) break;
             ESP_LOGW(TAG, "Map recv error — reconnect in 10 s");
             vTaskDelay(pdMS_TO_TICKS(10000));
@@ -1029,7 +1060,7 @@ void ts_ctrl_poll_loop(ts_ctrl_ctx_t *ctx)
         }
         ESP_LOGD(TAG, "Incremental MapResponse (%u B)", (unsigned)map_len);
         ts_netmap_apply(map_buf, map_len);
-        free(map_buf);
+        /* map_buf owned by map_read_one — do NOT free. */
 
         ts_derp_node_t derp_home;
         if (ts_netmap_get_derp_home(&derp_home)) {

@@ -32,10 +32,29 @@ require-probe-host:
         probe-ping probe-http probe-tcp probe-tsping \
         require-probe-host clean
 
+# Track which defaults set generated the current sdkconfig, so we
+# automatically regenerate it when switching between HW and QEMU builds
+# (otherwise stale, mode-specific settings persist in sdkconfig).
+BUILD_MODE_FILE = build/.build_mode
+
+# $(call switch-mode,<label>) deletes sdkconfig if the previous build was for
+# a different mode. sdkconfig is gitignored and regeneratable from
+# sdkconfig.defaults / sdkconfig.qemu / Makefile.local.
+define switch-mode
+	@mkdir -p build
+	@if [ "$$(cat $(BUILD_MODE_FILE) 2>/dev/null)" != "$(1)" ]; then \
+		echo "switch-mode: $$(cat $(BUILD_MODE_FILE) 2>/dev/null || echo none) -> $(1); regenerating sdkconfig"; \
+		rm -f sdkconfig; \
+		echo "$(1)" > $(BUILD_MODE_FILE); \
+	fi
+endef
+
 build:
-	bash -c "source $(IDF_EXPORTS) && idf.py build"
+	$(call switch-mode,hw)
+	bash -c "source $(IDF_EXPORTS) && idf.py -DSDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.local' build"
 
 build-qemu:
+	$(call switch-mode,qemu)
 	bash -c "source $(IDF_EXPORTS) && idf.py -DSDKCONFIG_DEFAULTS='$(SDKCONFIG_QEMU)' build"
 
 # Foreground QEMU (interactive console).

@@ -1,5 +1,11 @@
 /*
- * Tailscale network map — MapResponse JSON parser and WireGuard peer manager.
+ * Tailscale network map — MapResponse stream parser and WireGuard peer manager.
+ *
+ * Uses the SAX-style ts_js streaming JSON parser instead of cJSON. This keeps
+ * memory bounded by the input buffer length plus O(depth) parser state, which
+ * is essential on the ESP32 where the ~28 KB MapResponse JSON would exhaust
+ * cJSON's tree allocations alongside the WiFi/TLS heap.
+ *
  * SPDX-License-Identifier: BSD-3-Clause
  */
 
@@ -7,14 +13,17 @@
 #include "tailscale_derp.h"
 #include "tailscale_disco.h"
 #include "tailscale_keys.h"
+#include "tailscale_jstream.h"
 
 #include "wireguard_esp32.h"   /* wireguard_esp32_add_peer / remove / update */
 
-#include "cJSON.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "lwip/ip_addr.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdint.h>
 
 static const char *TAG = "ts_netmap";
@@ -36,12 +45,14 @@ typedef struct {
 
 static netmap_peer_t s_peers[TS_NETMAP_MAX_PEERS];
 static char          s_self_ip[20];
+static ts_derp_node_t s_derp_home;
+static bool           s_derp_home_valid = false;
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                              */
 /* ------------------------------------------------------------------ */
 
-/* Parse "100.x.y.z/32" → "100.x.y.z" */
+/* "100.x.y.z/32" → "100.x.y.z" */
 static void strip_prefix(const char *cidr, char *ip_out, size_t ip_out_len)
 {
     strlcpy(ip_out, cidr, ip_out_len);
@@ -49,11 +60,10 @@ static void strip_prefix(const char *cidr, char *ip_out, size_t ip_out_len)
     if (slash) *slash = '\0';
 }
 
-/* Parse "1.2.3.4:12345" → ip_addr_t + port */
+/* "1.2.3.4:12345" → ip_addr_t + port */
 static bool parse_endpoint(const char *ep_str,
                             ip_addr_t *ip_out, uint16_t *port_out)
 {
-    /* Find last colon (handles IPv4 only) */
     const char *colon = strrchr(ep_str, ':');
     if (!colon) return false;
 
@@ -101,193 +111,384 @@ static int alloc_peer_slot(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* DERP home node state (forward-declared before parse_derpmap)        */
+/* Streaming parser helpers                                             */
 /* ------------------------------------------------------------------ */
 
-static ts_derp_node_t s_derp_home;
-static bool           s_derp_home_valid = false;
+/* After reading an OBJ_START, walk member-by-member calling key_handler
+ * for each KEY event. The handler is responsible for consuming the value
+ * (either via ts_js_skip() to ignore, or by reading it). Returns at the
+ * matching OBJ_END. */
+typedef bool (*key_handler_fn)(ts_js_t *j, void *ctx);
 
-/* ------------------------------------------------------------------ */
-/* DERPMap parsing — extract home server for Region 1 (lowest latency) */
-/* ------------------------------------------------------------------ */
-
-static void parse_derpmap(const cJSON *derp_map_obj)
+static bool walk_object(ts_js_t *j, key_handler_fn handler, void *ctx)
 {
-    if (!cJSON_IsObject(derp_map_obj)) return;
-
-    cJSON *regions = cJSON_GetObjectItemCaseSensitive(derp_map_obj, "Regions");
-    if (!cJSON_IsObject(regions)) return;
-
-    /* Pick region with the numerically smallest ID as "home" */
-    int best_id = INT32_MAX;
-    ts_derp_node_t best_node = {0};
-    bool found = false;
-
-    cJSON *region;
-    cJSON_ArrayForEach(region, regions) {
-        if (!cJSON_IsObject(region)) continue;
-        cJSON *region_id_j = cJSON_GetObjectItemCaseSensitive(region, "RegionID");
-        int region_id = cJSON_IsNumber(region_id_j) ? (int)region_id_j->valuedouble : INT32_MAX;
-        if (region_id >= best_id) continue;
-
-        cJSON *nodes = cJSON_GetObjectItemCaseSensitive(region, "Nodes");
-        if (!cJSON_IsArray(nodes) || cJSON_GetArraySize(nodes) == 0) continue;
-        cJSON *node = cJSON_GetArrayItem(nodes, 0);
-        if (!cJSON_IsObject(node)) continue;
-
-        cJSON *host_j = cJSON_GetObjectItemCaseSensitive(node, "HostName");
-        cJSON *port_j = cJSON_GetObjectItemCaseSensitive(node, "DERPPort");
-        cJSON *stun_j = cJSON_GetObjectItemCaseSensitive(node, "STUNPort");
-        if (!cJSON_IsString(host_j)) continue;
-
-        best_id = region_id;
-        strlcpy(best_node.hostname, host_j->valuestring,
-                sizeof(best_node.hostname));
-        best_node.derp_port = cJSON_IsNumber(port_j) ? (uint16_t)port_j->valuedouble : 443;
-        best_node.stun_port = cJSON_IsNumber(stun_j) ? (uint16_t)stun_j->valuedouble : 3478;
-        best_node.region_id = region_id;
-        found = true;
+    while (1) {
+        ts_js_evt_t e = ts_js_next(j);
+        if (e == TS_JS_OBJ_END) return true;
+        if (e != TS_JS_KEY) return false;
+        if (!handler(j, ctx)) {
+            /* Handler indicated it didn't consume the value — skip it. */
+            if (ts_js_skip(j) == TS_JS_ERROR) return false;
+        }
     }
+}
 
-    if (found) {
-        ESP_LOGI(TAG, "DERP home server: %s:%d", best_node.hostname, best_node.derp_port);
-        s_derp_home       = best_node;
+/* Consume the next value, which must be a TS_JS_STRING, into dst. Returns
+ * true if a string was read (possibly truncated). */
+static bool read_string_value(ts_js_t *j, char *dst, size_t dst_size)
+{
+    ts_js_evt_t e = ts_js_next(j);
+    if (e != TS_JS_STRING) {
+        if (e == TS_JS_OBJ_START || e == TS_JS_ARR_START) {
+            /* Not a string — back up by skipping the rest. */
+            while (j->depth > 0) {
+                ts_js_evt_t e2 = ts_js_next(j);
+                if (e2 == TS_JS_END || e2 == TS_JS_ERROR) break;
+                if ((e2 == TS_JS_OBJ_END || e2 == TS_JS_ARR_END) &&
+                    j->depth == 0) break;
+            }
+        }
+        return false;
+    }
+    ts_js_str_copy(j, dst, dst_size);
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/* "Node" object — extract self Tailscale IP                            */
+/* ------------------------------------------------------------------ */
+
+static bool node_key_handler(ts_js_t *j, void *ctx)
+{
+    (void)ctx;
+    if (!ts_js_str_eq(j, "Addresses")) return false;
+
+    /* Expect an array of strings; we only want the first. */
+    if (ts_js_next(j) != TS_JS_ARR_START) return true;
+
+    ts_js_evt_t e = ts_js_next(j);
+    if (e == TS_JS_STRING) {
+        char addr[40];
+        ts_js_str_copy(j, addr, sizeof(addr));
+        strip_prefix(addr, s_self_ip, sizeof(s_self_ip));
+        ESP_LOGI(TAG, "Self Tailscale IP: %s", s_self_ip);
+        /* /10 covers Tailscale's 100.64.0.0/10 CGNAT range so lwIP routes
+         * all peer traffic through the WG netif. */
+        wireguard_esp32_set_address(s_self_ip, "255.192.0.0");
+        /* Drain remaining array elements. */
+        while ((e = ts_js_next(j)) != TS_JS_ARR_END &&
+               e != TS_JS_END && e != TS_JS_ERROR) {
+            /* tokens / values until ] */
+        }
+    }
+    return true;
+}
+
+static void parse_node_obj(ts_js_t *j)
+{
+    if (ts_js_next(j) != TS_JS_OBJ_START) return;
+    walk_object(j, node_key_handler, NULL);
+}
+
+/* ------------------------------------------------------------------ */
+/* "DERPMap" — pick smallest region ID with a valid Nodes[0]            */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int             best_id;
+    ts_derp_node_t  best_node;
+    bool            found;
+} derp_state_t;
+
+/* Inside a region's Nodes[0] object: collect HostName, DERPPort, STUNPort. */
+static bool node0_key_handler(ts_js_t *j, void *ctx)
+{
+    ts_derp_node_t *n = (ts_derp_node_t *)ctx;
+    if (ts_js_str_eq(j, "HostName")) {
+        char host[64];
+        if (read_string_value(j, host, sizeof(host)))
+            strlcpy(n->hostname, host, sizeof(n->hostname));
+        return true;
+    }
+    if (ts_js_str_eq(j, "DERPPort")) {
+        if (ts_js_next(j) != TS_JS_NUMBER) return true;
+        n->derp_port = (uint16_t)ts_js_int(j);
+        return true;
+    }
+    if (ts_js_str_eq(j, "STUNPort")) {
+        if (ts_js_next(j) != TS_JS_NUMBER) return true;
+        n->stun_port = (uint16_t)ts_js_int(j);
+        return true;
+    }
+    return false;
+}
+
+/* Inside a region object: collect RegionID, parse first Nodes[] entry. */
+typedef struct {
+    int             region_id;
+    ts_derp_node_t  node0;
+    bool            have_node0;
+} region_state_t;
+
+static bool region_key_handler(ts_js_t *j, void *ctx)
+{
+    region_state_t *r = (region_state_t *)ctx;
+    if (ts_js_str_eq(j, "RegionID")) {
+        if (ts_js_next(j) != TS_JS_NUMBER) return true;
+        r->region_id = ts_js_int(j);
+        return true;
+    }
+    if (ts_js_str_eq(j, "Nodes")) {
+        if (ts_js_next(j) != TS_JS_ARR_START) return true;
+        /* First element is the node we care about; skip the rest. */
+        ts_js_evt_t e = ts_js_next(j);
+        if (e == TS_JS_OBJ_START) {
+            r->node0.derp_port = 443;
+            r->node0.stun_port = 3478;
+            walk_object(j, node0_key_handler, &r->node0);
+            r->have_node0 = true;
+        }
+        /* Drain any remaining array elements. */
+        while (j->depth > 0) {
+            e = ts_js_next(j);
+            if (e == TS_JS_ARR_END && j->scope[j->depth] != '[') {
+                break;
+            }
+            if (e == TS_JS_ARR_END || e == TS_JS_END || e == TS_JS_ERROR) break;
+        }
+        return true;
+    }
+    return false;
+}
+
+/* Inside Regions object: each member key is a region ID string, value is
+ * the region object. */
+static bool regions_key_handler(ts_js_t *j, void *ctx)
+{
+    derp_state_t *st = (derp_state_t *)ctx;
+    /* Region member key (the numeric ID as a string) — value is an object. */
+    if (ts_js_next(j) != TS_JS_OBJ_START) return true;
+
+    region_state_t r = { .region_id = INT32_MAX };
+    if (!walk_object(j, region_key_handler, &r)) return true;
+
+    if (r.have_node0 && r.region_id < st->best_id && r.node0.hostname[0]) {
+        st->best_id   = r.region_id;
+        st->best_node = r.node0;
+        st->best_node.region_id = r.region_id;
+        st->found     = true;
+    }
+    return true;
+}
+
+static bool derpmap_key_handler(ts_js_t *j, void *ctx)
+{
+    derp_state_t *st = (derp_state_t *)ctx;
+    if (!ts_js_str_eq(j, "Regions")) return false;
+    if (ts_js_next(j) != TS_JS_OBJ_START) return true;
+    walk_object(j, regions_key_handler, st);
+    return true;
+}
+
+static void parse_derpmap_stream(ts_js_t *j)
+{
+    if (ts_js_next(j) != TS_JS_OBJ_START) return;
+    derp_state_t st = { .best_id = INT32_MAX };
+    walk_object(j, derpmap_key_handler, &st);
+    if (st.found) {
+        ESP_LOGI(TAG, "DERP home server: %s:%d (region %d)",
+                 st.best_node.hostname, st.best_node.derp_port,
+                 st.best_node.region_id);
+        s_derp_home       = st.best_node;
         s_derp_home_valid = true;
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Peer array application — used for both "Peers" (full) and          */
-/* "PeersChanged" (incremental).                                       */
+/* Peer array — full snapshot ("Peers") or incremental ("PeersChanged") */
 /* ------------------------------------------------------------------ */
 
-static void apply_peer_array(const cJSON *arr, bool full_snapshot)
+typedef struct {
+    int64_t  node_id;
+    bool     have_node_pub;
+    uint8_t  node_pub[32];
+    uint8_t  disco_pub[32];
+    char     ts_ip[20];
+    ip_addr_t ep_ip;
+    uint16_t  ep_port;
+    bool      have_direct_ep;
+    int       derp_region;     /* >0 when a DERP pseudo endpoint was advertised */
+} peer_parse_t;
+
+static bool peer_key_handler(ts_js_t *j, void *ctx)
 {
-    /* For full snapshots, mark every active slot for removal unless
-     * it appears in the incoming array. */
-    bool keep[TS_NETMAP_MAX_PEERS] = {false};
+    peer_parse_t *p = (peer_parse_t *)ctx;
 
-    cJSON *peer_j;
-    cJSON_ArrayForEach(peer_j, arr) {
-        if (!cJSON_IsObject(peer_j)) continue;
-
-        cJSON *key_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Key");
-        if (!cJSON_IsString(key_j)) continue;
-
-        uint8_t node_pub[32];
-        if (!ts_key_from_hex(key_j->valuestring, node_pub)) {
-            ESP_LOGW(TAG, "Failed to decode peer key: %s", key_j->valuestring);
-            continue;
+    if (ts_js_str_eq(j, "Key")) {
+        char hex[80];
+        if (read_string_value(j, hex, sizeof(hex)) &&
+            ts_key_from_hex(hex, p->node_pub)) {
+            p->have_node_pub = true;
         }
-
-        cJSON *id_j = cJSON_GetObjectItemCaseSensitive(peer_j, "ID");
-        int64_t node_id = cJSON_IsNumber(id_j) ? (int64_t)id_j->valuedouble : 0;
-
-        uint8_t disco_pub[32] = {0};
-        cJSON *disco_j = cJSON_GetObjectItemCaseSensitive(peer_j, "DiscoKey");
-        if (cJSON_IsString(disco_j)) {
-            ts_key_from_hex(disco_j->valuestring, disco_pub);
+        return true;
+    }
+    if (ts_js_str_eq(j, "ID")) {
+        if (ts_js_next(j) != TS_JS_NUMBER) return true;
+        p->node_id = ts_js_int64(j);
+        return true;
+    }
+    if (ts_js_str_eq(j, "DiscoKey")) {
+        char hex[80];
+        if (read_string_value(j, hex, sizeof(hex)))
+            ts_key_from_hex(hex, p->disco_pub);
+        return true;
+    }
+    if (ts_js_str_eq(j, "Addresses")) {
+        if (ts_js_next(j) != TS_JS_ARR_START) return true;
+        ts_js_evt_t e = ts_js_next(j);
+        if (e == TS_JS_STRING) {
+            char a[40];
+            ts_js_str_copy(j, a, sizeof(a));
+            strip_prefix(a, p->ts_ip, sizeof(p->ts_ip));
         }
-
-        char ts_ip[20] = {0};
-        cJSON *addrs_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Addresses");
-        if (cJSON_IsArray(addrs_j) && cJSON_GetArraySize(addrs_j) > 0) {
-            cJSON *a0 = cJSON_GetArrayItem(addrs_j, 0);
-            if (cJSON_IsString(a0)) {
-                strip_prefix(a0->valuestring, ts_ip, sizeof(ts_ip));
-            }
+        while ((e = ts_js_next(j)) != TS_JS_ARR_END &&
+               e != TS_JS_END && e != TS_JS_ERROR) {}
+        return true;
+    }
+    if (ts_js_str_eq(j, "Endpoints")) {
+        if (ts_js_next(j) != TS_JS_ARR_START) return true;
+        ts_js_evt_t e = ts_js_next(j);
+        if (e == TS_JS_STRING && !p->have_direct_ep) {
+            char ep[64];
+            ts_js_str_copy(j, ep, sizeof(ep));
+            if (parse_endpoint(ep, &p->ep_ip, &p->ep_port))
+                p->have_direct_ep = true;
         }
-
-        /* Endpoint: prefer direct UDP endpoint; fall back to DERP pseudo-IP */
-        ip_addr_t ep_ip = IPADDR4_INIT(0);
-        uint16_t  ep_port = 0;
-        bool have_direct_ep = false;
-        cJSON *eps_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Endpoints");
-        if (cJSON_IsArray(eps_j) && cJSON_GetArraySize(eps_j) > 0) {
-            cJSON *ep0 = cJSON_GetArrayItem(eps_j, 0);
-            if (cJSON_IsString(ep0)) {
-                if (parse_endpoint(ep0->valuestring, &ep_ip, &ep_port))
-                    have_direct_ep = true;
-            }
+        while ((e = ts_js_next(j)) != TS_JS_ARR_END &&
+               e != TS_JS_END && e != TS_JS_ERROR) {}
+        return true;
+    }
+    if (ts_js_str_eq(j, "DERP")) {
+        char d[40];
+        if (read_string_value(j, d, sizeof(d))) {
+            const char *colon = strrchr(d, ':');
+            if (colon) p->derp_region = atoi(colon + 1);
         }
-        if (!have_direct_ep) {
-            cJSON *derp_j = cJSON_GetObjectItemCaseSensitive(peer_j, "DERP");
-            if (cJSON_IsString(derp_j)) {
-                const char *colon = strrchr(derp_j->valuestring, ':');
-                if (colon) {
-                    ep_port = (uint16_t)atoi(colon + 1);
-                    ip4_addr_t derp4;
-                    ip4addr_aton("127.3.3.40", &derp4);
-                    ip_addr_copy_from_ip4(ep_ip, derp4);
-                }
-            }
-        }
+        return true;
+    }
+    return false;
+}
 
-        char pub_b64[64];
-        size_t b64_len = sizeof(pub_b64);
-        extern bool wireguard_base64_encode(const uint8_t *, size_t, char *, size_t *);
-        wireguard_base64_encode(node_pub, 32, pub_b64, &b64_len);
+static void apply_one_peer(const peer_parse_t *p, bool *keep)
+{
+    if (!p->have_node_pub) return;
 
-        int slot = find_peer_slot(node_pub);
-        if (slot >= 0) {
-            keep[slot] = true;
-            s_peers[slot].node_id = node_id;
-            if (!ip_addr_isany(&ep_ip) && ep_port != 0) {
-                wireguard_esp32_update_endpoint(s_peers[slot].wg_index,
-                                                &ep_ip, ep_port);
-            }
-            continue;
-        }
+    ip_addr_t ep_ip = p->ep_ip;
+    uint16_t  ep_port = p->ep_port;
+    bool      have_direct_ep = p->have_direct_ep;
 
-        slot = alloc_peer_slot();
-        if (slot < 0) {
-            ESP_LOGW(TAG, "Peer table full, dropping peer %s", ts_ip);
-            continue;
-        }
-
-        ip4_addr_t allowed4, mask4;
-        if (ts_ip[0] && ip4addr_aton(ts_ip, &allowed4)) {
-            ip4addr_aton("255.255.255.255", &mask4);
-        } else {
-            ip4_addr_set_zero(&allowed4);
-            ip4_addr_set_zero(&mask4);
-        }
-        ip_addr_t allowed_ip, allowed_mask;
-        ip_addr_copy_from_ip4(allowed_ip, allowed4);
-        ip_addr_copy_from_ip4(allowed_mask, mask4);
-
-        uint8_t wg_idx;
-        esp_err_t err = wireguard_esp32_add_peer(
-            pub_b64,
-            &allowed_ip,
-            &allowed_mask,
-            ip_addr_isany(&ep_ip) ? NULL : &ep_ip,
-            ep_port,
-            25,
-            &wg_idx);
-
-        if (err == ESP_OK) {
-            memcpy(s_peers[slot].node_pub,  node_pub,  32);
-            memcpy(s_peers[slot].disco_pub, disco_pub, 32);
-            strlcpy(s_peers[slot].ts_ip, ts_ip, sizeof(s_peers[slot].ts_ip));
-            s_peers[slot].wg_index = wg_idx;
-            s_peers[slot].node_id  = node_id;
-            s_peers[slot].active   = true;
-            keep[slot] = true;
-            ESP_LOGI(TAG, "Added peer %s id=%lld (wg_idx=%d, direct=%d)",
-                     ts_ip, (long long)node_id, wg_idx, have_direct_ep);
-
-            if (have_direct_ep) {
-                bool disco_set = false;
-                for (int b = 0; b < 32; b++) if (disco_pub[b]) { disco_set = true; break; }
-                if (disco_set) {
-                    ts_disco_ping(wg_idx, disco_pub, &ep_ip, ep_port);
-                }
-            }
-        }
+    /* If no direct endpoint, fall back to DERP pseudo-IP 127.3.3.40:<region>. */
+    if (!have_direct_ep && p->derp_region > 0) {
+        ip4_addr_t derp4;
+        ip4addr_aton("127.3.3.40", &derp4);
+        ip_addr_copy_from_ip4(ep_ip, derp4);
+        ep_port = (uint16_t)p->derp_region;
     }
 
-    /* Removal sweep only on full snapshots */
+    char pub_b64[64];
+    size_t b64_len = sizeof(pub_b64);
+    extern bool wireguard_base64_encode(const uint8_t *, size_t, char *, size_t *);
+    wireguard_base64_encode(p->node_pub, 32, pub_b64, &b64_len);
+
+    int slot = find_peer_slot(p->node_pub);
+    if (slot >= 0) {
+        keep[slot] = true;
+        s_peers[slot].node_id = p->node_id;
+        if (!ip_addr_isany(&ep_ip) && ep_port != 0) {
+            wireguard_esp32_update_endpoint(s_peers[slot].wg_index,
+                                            &ep_ip, ep_port);
+        }
+        return;
+    }
+
+    slot = alloc_peer_slot();
+    if (slot < 0) {
+        ESP_LOGW(TAG, "Peer table full, dropping peer %s", p->ts_ip);
+        return;
+    }
+
+    ip4_addr_t allowed4, mask4;
+    if (p->ts_ip[0] && ip4addr_aton(p->ts_ip, &allowed4)) {
+        ip4addr_aton("255.255.255.255", &mask4);
+    } else {
+        ip4_addr_set_zero(&allowed4);
+        ip4_addr_set_zero(&mask4);
+    }
+    ip_addr_t allowed_ip, allowed_mask;
+    ip_addr_copy_from_ip4(allowed_ip, allowed4);
+    ip_addr_copy_from_ip4(allowed_mask, mask4);
+
+    uint8_t wg_idx;
+    esp_err_t err = wireguard_esp32_add_peer(
+        pub_b64,
+        &allowed_ip,
+        &allowed_mask,
+        ip_addr_isany(&ep_ip) ? NULL : &ep_ip,
+        ep_port,
+        25,
+        &wg_idx);
+
+    if (err != ESP_OK) return;
+
+    memcpy(s_peers[slot].node_pub,  p->node_pub,  32);
+    memcpy(s_peers[slot].disco_pub, p->disco_pub, 32);
+    strlcpy(s_peers[slot].ts_ip, p->ts_ip, sizeof(s_peers[slot].ts_ip));
+    s_peers[slot].wg_index = wg_idx;
+    s_peers[slot].node_id  = p->node_id;
+    s_peers[slot].active   = true;
+    keep[slot] = true;
+    ESP_LOGI(TAG, "Added peer %s id=%lld (wg_idx=%d, direct=%d)",
+             p->ts_ip, (long long)p->node_id, wg_idx, have_direct_ep);
+
+    if (have_direct_ep) {
+        bool disco_set = false;
+        for (int b = 0; b < 32; b++)
+            if (p->disco_pub[b]) { disco_set = true; break; }
+        if (disco_set) {
+            ts_disco_ping(wg_idx, p->disco_pub, &ep_ip, ep_port);
+        }
+    }
+}
+
+static void parse_peer_array_stream(ts_js_t *j, bool full_snapshot)
+{
+    if (ts_js_next(j) != TS_JS_ARR_START) return;
+
+    bool keep[TS_NETMAP_MAX_PEERS] = {false};
+    int  count = 0;
+
+    while (1) {
+        ts_js_evt_t e = ts_js_next(j);
+        if (e == TS_JS_ARR_END) break;
+        if (e != TS_JS_OBJ_START) {
+            /* Unexpected — skip remainder. */
+            ts_js_skip(j);
+            continue;
+        }
+
+        peer_parse_t p = {0};
+        ip4_addr_t zero;
+        ip4_addr_set_zero(&zero);
+        ip_addr_copy_from_ip4(p.ep_ip, zero);
+
+        if (!walk_object(j, peer_key_handler, &p)) break;
+        apply_one_peer(&p, keep);
+        count++;
+    }
+
+    ESP_LOGI(TAG, "Peers (%s): %d processed",
+             full_snapshot ? "full" : "changed", count);
+
     if (full_snapshot) {
         for (int i = 0; i < TS_NETMAP_MAX_PEERS; i++) {
             if (s_peers[i].active && !keep[i]) {
@@ -298,6 +499,69 @@ static void apply_peer_array(const cJSON *arr, bool full_snapshot)
             }
         }
     }
+}
+
+static void parse_peers_removed_stream(ts_js_t *j)
+{
+    if (ts_js_next(j) != TS_JS_ARR_START) return;
+    while (1) {
+        ts_js_evt_t e = ts_js_next(j);
+        if (e == TS_JS_ARR_END) break;
+        if (e != TS_JS_NUMBER) continue;
+        int64_t node_id = ts_js_int64(j);
+        int slot = find_peer_slot_by_id(node_id);
+        if (slot >= 0) {
+            ESP_LOGI(TAG, "Removing peer %s (id=%lld, wg_idx=%d)",
+                     s_peers[slot].ts_ip, (long long)node_id,
+                     s_peers[slot].wg_index);
+            wireguard_esp32_remove_peer(s_peers[slot].wg_index);
+            s_peers[slot].active = false;
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Top-level dispatcher                                                 */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    bool keep_alive;
+} root_state_t;
+
+static bool root_key_handler(ts_js_t *j, void *ctx)
+{
+    root_state_t *st = (root_state_t *)ctx;
+    if (ts_js_str_eq(j, "Node")) {
+        parse_node_obj(j);
+        return true;
+    }
+    if (ts_js_str_eq(j, "DERPMap")) {
+        parse_derpmap_stream(j);
+        return true;
+    }
+    if (ts_js_str_eq(j, "Peers")) {
+        parse_peer_array_stream(j, true);
+        return true;
+    }
+    if (ts_js_str_eq(j, "PeersChanged")) {
+        parse_peer_array_stream(j, false);
+        return true;
+    }
+    if (ts_js_str_eq(j, "PeersRemoved")) {
+        parse_peers_removed_stream(j);
+        return true;
+    }
+    if (ts_js_str_eq(j, "PeersChangedPatch")) {
+        ESP_LOGW(TAG, "PeersChangedPatch present — not implemented, skipping");
+        return false;   /* fall through to ts_js_skip */
+    }
+    if (ts_js_str_eq(j, "KeepAlive")) {
+        if (ts_js_next(j) == TS_JS_BOOL && j->bool_value) {
+            st->keep_alive = true;
+        }
+        return true;
+    }
+    return false;   /* unknown key — caller will skip the value */
 }
 
 /* ------------------------------------------------------------------ */
@@ -313,101 +577,28 @@ bool ts_netmap_get_derp_home(ts_derp_node_t *node_out)
 
 esp_err_t ts_netmap_apply(const char *json_str, size_t json_len)
 {
-    cJSON *root = cJSON_ParseWithLength(json_str, json_len);
-    if (!root) {
-        ESP_LOGE(TAG, "Failed to parse MapResponse JSON");
+    ESP_LOGD(TAG, "ts_netmap_apply: %u B (heap_free=%u, largest=%u)",
+             (unsigned)json_len,
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+
+    ts_js_t j;
+    ts_js_init(&j, json_str, json_len);
+
+    if (ts_js_next(&j) != TS_JS_OBJ_START) {
+        ESP_LOGE(TAG, "MapResponse: not a JSON object");
         return ESP_ERR_INVALID_ARG;
     }
 
-    /* ---- Self node -------------------------------------------------- */
-    cJSON *self_node = cJSON_GetObjectItemCaseSensitive(root, "Node");
-    if (cJSON_IsObject(self_node)) {
-        cJSON *addrs = cJSON_GetObjectItemCaseSensitive(self_node, "Addresses");
-        if (cJSON_IsArray(addrs) && cJSON_GetArraySize(addrs) > 0) {
-            cJSON *addr0 = cJSON_GetArrayItem(addrs, 0);
-            if (cJSON_IsString(addr0)) {
-                strip_prefix(addr0->valuestring, s_self_ip, sizeof(s_self_ip));
-                ESP_LOGI(TAG, "Self Tailscale IP: %s", s_self_ip);
-
-                /* Update WireGuard interface address */
-                /* /10 covers Tailscale's 100.64.0.0/10 CGNAT range so lwIP
-                 * routes all peer traffic through the WG netif. */
-                wireguard_esp32_set_address(s_self_ip, "255.192.0.0");
-            }
-        }
+    root_state_t st = {0};
+    if (!walk_object(&j, root_key_handler, &st)) {
+        ESP_LOGE(TAG, "MapResponse: stream parse error");
+        return ESP_ERR_INVALID_ARG;
     }
 
-    /* ---- DERPMap ---------------------------------------------------- */
-    cJSON *derpmap = cJSON_GetObjectItemCaseSensitive(root, "DERPMap");
-    if (derpmap) {
-        parse_derpmap(derpmap);
+    if (st.keep_alive) {
+        ESP_LOGD(TAG, "MapResponse: KeepAlive");
     }
-
-    /* ---- Top-level field diagnostic --------------------------------- */
-    {
-        char keys[256] = {0};
-        size_t off = 0;
-        cJSON *child = root->child;
-        while (child && off < sizeof(keys) - 2) {
-            const char *name = child->string ? child->string : "?";
-            size_t n = strlen(name);
-            if (off + n + 2 >= sizeof(keys)) break;
-            if (off) keys[off++] = ',';
-            memcpy(keys + off, name, n);
-            off += n;
-            child = child->next;
-        }
-        keys[off] = '\0';
-        ESP_LOGI(TAG, "MapResponse keys: %s", keys);
-    }
-
-    /* ---- KeepAlive (silent heartbeat) ------------------------------- */
-    cJSON *ka = cJSON_GetObjectItemCaseSensitive(root, "KeepAlive");
-    if (cJSON_IsTrue(ka)) {
-        cJSON_Delete(root);
-        return ESP_OK;
-    }
-
-    /* ---- Peers (full snapshot) -------------------------------------- */
-    cJSON *peers = cJSON_GetObjectItemCaseSensitive(root, "Peers");
-    if (cJSON_IsArray(peers)) {
-        ESP_LOGI(TAG, "Peers (full snapshot): %d", cJSON_GetArraySize(peers));
-        apply_peer_array(peers, true);
-    }
-
-    /* ---- PeersChanged (incremental — full Peer records) ------------- */
-    cJSON *peers_changed = cJSON_GetObjectItemCaseSensitive(root, "PeersChanged");
-    if (cJSON_IsArray(peers_changed)) {
-        ESP_LOGI(TAG, "PeersChanged: %d", cJSON_GetArraySize(peers_changed));
-        apply_peer_array(peers_changed, false);
-    }
-
-    /* ---- PeersRemoved (incremental — array of NodeIDs) -------------- */
-    cJSON *peers_removed = cJSON_GetObjectItemCaseSensitive(root, "PeersRemoved");
-    if (cJSON_IsArray(peers_removed)) {
-        cJSON *id_j;
-        cJSON_ArrayForEach(id_j, peers_removed) {
-            if (!cJSON_IsNumber(id_j)) continue;
-            int64_t node_id = (int64_t)id_j->valuedouble;
-            int slot = find_peer_slot_by_id(node_id);
-            if (slot >= 0) {
-                ESP_LOGI(TAG, "Removing peer %s (id=%lld, wg_idx=%d)",
-                         s_peers[slot].ts_ip, (long long)node_id,
-                         s_peers[slot].wg_index);
-                wireguard_esp32_remove_peer(s_peers[slot].wg_index);
-                s_peers[slot].active = false;
-            }
-        }
-    }
-
-    /* ---- PeersChangedPatch (sub-field updates — not implemented) ---- */
-    cJSON *patch = cJSON_GetObjectItemCaseSensitive(root, "PeersChangedPatch");
-    if (cJSON_IsArray(patch) && cJSON_GetArraySize(patch) > 0) {
-        ESP_LOGW(TAG, "PeersChangedPatch (%d entries) — not implemented, skipping",
-                 cJSON_GetArraySize(patch));
-    }
-
-    cJSON_Delete(root);
     return ESP_OK;
 }
 

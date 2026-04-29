@@ -59,6 +59,14 @@ CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
+# Dynamic TLS RX/TX buffers — without this, every active TLS context permanently
+# holds 16 KiB IN + 4 KiB OUT, and we run two simultaneous TLS sessions
+# (control to login.tailscale.com and DERP). On real hardware this exhausts
+# heap during DERP cert-chain verification, surfacing as bogus
+# "PK verify failed". With dynamic buffers mbedTLS allocates only while
+# actively reading/writing a record.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
 # Custom UART configuration for logging
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
 CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y

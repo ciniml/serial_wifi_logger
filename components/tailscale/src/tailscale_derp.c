@@ -567,11 +567,15 @@ esp_err_t ts_derp_connect(const ts_derp_node_t *node,
     if (node_pub  != s_node_pub)        memcpy(s_node_pub, node_pub, 32);
     if (node_priv != s_node_priv_saved) memcpy(s_node_priv_saved, node_priv, 32);
 
-    ESP_LOGI(TAG, "DERP: connecting to %s:%d", node->hostname, node->derp_port);
+    ESP_LOGI(TAG, "DERP: connecting to %s:%d (heap_free=%u)",
+             node->hostname, node->derp_port,
+             (unsigned)esp_get_free_heap_size());
     esp_tls_cfg_t cfg = {
         .crt_bundle_attach = esp_crt_bundle_attach,
         .non_block         = false,
-        .timeout_ms        = 20000,
+        .timeout_ms        = 60000,   /* cert chain verification on real-HW
+                                       * S3 + concurrent control-TLS load can
+                                       * exceed 20s; give ample headroom. */
     };
     s_tls = esp_tls_init();
     if (!s_tls) {
@@ -582,7 +586,13 @@ esp_err_t ts_derp_connect(const ts_derp_node_t *node,
                                     (int)strlen(node->hostname),
                                     (int)node->derp_port, &cfg, s_tls);
     if (ret != 1) {
-        ESP_LOGE(TAG, "TLS connect to DERP %s failed: %d", node->hostname, ret);
+        int last_err = 0, mb_err = 0, flags = 0;
+        esp_tls_get_and_clear_last_error(&((esp_tls_last_error_t){0}),
+                                         &mb_err, &flags);
+        (void)last_err;
+        ESP_LOGE(TAG, "TLS connect to DERP %s failed: ret=%d mbedtls=-0x%04x flags=0x%x heap=%u",
+                 node->hostname, ret, -mb_err, flags,
+                 (unsigned)esp_get_free_heap_size());
         esp_tls_conn_destroy(s_tls);
         s_tls = NULL;
         return ESP_FAIL;

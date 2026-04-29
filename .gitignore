@@ -3,6 +3,8 @@ managed_components
 dependencies.lock
 sdkconfig.old
 sdkconfig
+# Per-developer ESP-IDF defaults overlay (e.g. CONFIG_TAILSCALE_AUTH_KEY)
+sdkconfig.local
 
 # Firmware binaries
 firmware.bin
