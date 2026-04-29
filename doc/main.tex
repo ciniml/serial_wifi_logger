@@ -1,0 +1,1957 @@
+\PassOptionsToPackage{unicode=true}{hyperref} % options for packages loaded elsewhere
+\PassOptionsToPackage{hyphens}{url}
+%
+\documentclass[10pt,twoside,openany,a4j]{ltjsbook}
+\usepackage{lmodern}
+\usepackage{calc} % for calculating minipage widths
+\usepackage{array}
+\usepackage{amssymb,amsmath}
+\usepackage{ifxetex,ifluatex}
+\usepackage{fixltx2e} % provides \textsubscript
+\ifnum 0\ifxetex 1\fi\ifluatex 1\fi=0 % if pdftex
+  \usepackage[T1]{fontenc}
+  \usepackage[utf8]{inputenc}
+  \usepackage{textcomp} % provides euro and other symbols
+\else % if luatex or xelatex
+  \usepackage{unicode-math}
+  \defaultfontfeatures{Ligatures=TeX,Scale=MatchLowercase}
+\fi
+% use upquote if available, for straight quotes in verbatim environments
+\IfFileExists{upquote.sty}{\usepackage{upquote}}{}
+% use microtype if available
+\IfFileExists{microtype.sty}{%
+\usepackage[]{microtype}
+\UseMicrotypeSet[protrusion]{basicmath} % disable protrusion for tt fonts
+}{}
+\IfFileExists{parskip.sty}{%
+\usepackage{parskip}
+}{% else
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt plus 2pt minus 1pt}
+}
+\usepackage{hyperref}
+\hypersetup{
+            pdftitle={ESP32-S3でUSB-UARTをネットワーク経由で制御する},
+            pdfauthor={Kenta IDA (@ciniml)},
+            pdfborder={0 0 0},
+            breaklinks=true}
+\urlstyle{same}  % don't use monospace font for urls
+\usepackage[b5paper,margin=1.5cm]{geometry}
+\usepackage{listings}
+\newcommand{\passthrough}[1]{#1}
+\newcommand{\pandocbounded}[1]{#1}
+\usepackage{longtable,booktabs}
+% Fix footnotes in tables (requires footnote package)
+\IfFileExists{footnote.sty}{\usepackage{footnote}\makesavenoteenv{longtable}}{}
+\usepackage{graphicx,grffile}
+\makeatletter
+\def\maxwidth{\ifdim\Gin@nat@width>\linewidth\linewidth\else\Gin@nat@width\fi}
+\def\maxheight{\ifdim\Gin@nat@height>\textheight\textheight\else\Gin@nat@height\fi}
+\makeatother
+% Scale images if necessary, so that they will not overflow the page
+% margins by default, and it is still possible to overwrite the defaults
+% using explicit options in \includegraphics[width, height, ...]{}
+\setkeys{Gin}{width=\maxwidth,height=\maxheight,keepaspectratio}
+\setlength{\emergencystretch}{3em}  % prevent overfull lines
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\setcounter{secnumdepth}{0}
+% Redefines (sub)paragraphs to behave more like sections
+\ifx\paragraph\undefined\else
+\let\oldparagraph\paragraph
+\renewcommand{\paragraph}[1]{\oldparagraph{#1}\mbox{}}
+\fi
+\ifx\subparagraph\undefined\else
+\let\oldsubparagraph\subparagraph
+\renewcommand{\subparagraph}[1]{\oldsubparagraph{#1}\mbox{}}
+\fi
+
+% set default figure placement to htbp
+\makeatletter
+\def\fps@figure{htbp}
+\makeatother
+
+% Contents of listings-setup.tex
+\usepackage{xcolor}
+
+\lstset{
+    basicstyle=\smallsize\ttfamily,
+    numbers=left,
+    numberstyle=\smallsize,
+    stepnumber=2,
+    numbersep=5pt,
+    backgroundcolor=\color{black!10},
+    showspaces=true,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=true,
+    breakautoindent=true,
+    linewidth=\textwidth
+}
+
+\lstset{
+    language=Python,
+    basicstyle=\footnotesize\ttfamily,
+    numbers=left,
+    numberstyle=\footnotesize,
+    stepnumber=2,
+    numbersep=5pt,
+    backgroundcolor=\color{black!10},
+    showspaces=true,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=true,
+    breakautoindent=true,
+    linewidth=\textwidth
+}
+
+\lstdefinelanguage{bash}{}
+
+\lstset{
+    language=bash,
+    basicstyle=\footnotesize\ttfamily,
+    numbers=left,
+    numberstyle=\footnotesize,
+    stepnumber=2,
+    numbersep=5pt,
+    backgroundcolor=\color{black!10},
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=false,
+    breakautoindent=true,
+    linewidth=\textwidth
+}
+
+\lstdefinelanguage{run}{}
+
+\lstset{
+    language=run,
+    basicstyle=\footnotesize\ttfamily,
+    numbers=left,
+    numberstyle=\footnotesize,
+    stepnumber=2,
+    numbersep=5pt,
+    backgroundcolor=\color{black!10},
+    showspaces=false,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=false,
+    breakautoindent=true,
+    linewidth=\textwidth
+}
+
+\lstdefinelanguage{Scala}{
+    morekeywords={%
+    abstract,case,catch,class,def,do,else,extends,%
+    false,final,finally,for,forSome,if,implicit,import,lazy,%
+    match,new,null,object,override,package,private,protected,%
+    return,sealed,super,this,throw,trait,true,try,type,%
+    val,var,while,with,yield},
+    otherkeywords={=>,<-,<\%,<:,>:,\#,@},
+    sensitive=true,
+    morecomment=[l]{//},
+    morecomment=[n]{/*}{*/},
+    morestring=[b]",
+    morestring=[b]',
+    morestring=[b]"""
+}[keywords,comments,strings]
+
+\lstset{
+    language=Scala,
+    basicstyle=\footnotesize\ttfamily\mdseries,
+    numbers=left,
+    numberstyle=\footnotesize,
+    commentstyle=\color{black!70},
+    keywordstyle=\slshape,
+    stepnumber=2,
+    numbersep=5pt,
+    backgroundcolor=\color{black!10},
+    showspaces=true,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=true,
+    breakautoindent=true,
+    linewidth=\textwidth
+}
+
+
+\lstset{
+    language=Verilog,
+    basicstyle=\footnotesize\ttfamily\mdseries,
+    numbers=left,
+    numberstyle=\footnotesize,
+    commentstyle=\color{black!70},
+    keywordstyle=\slshape,
+    stepnumber=2,
+    numbersep=5pt,
+    backgroundcolor=\color{black!10},
+    showspaces=true,
+    showstringspaces=false,
+    showtabs=false,
+    tabsize=2,
+    captionpos=b,
+    breaklines=true,
+    breakatwhitespace=true,
+    breakautoindent=true,
+    linewidth=\textwidth
+}
+
+\renewcommand{\lstlistingname}{リスト}
+
+\title{ESP32-S3でUSB-UARTをネットワーク経由で制御する}
+\author{Kenta IDA (@ciniml)}
+\date{2026-04-12}
+
+\begin{document}
+
+
+{
+\setcounter{tocdepth}{2}
+\tableofcontents
+}
+\chapter{はじめに}\label{ux306fux3058ux3081ux306b}
+
+\section{本書の内容}\label{ux672cux66f8ux306eux5185ux5bb9}
+
+本書では、USB-CDC準拠およびFTDI製のUSB-UART変換器を無線LAN接続のネットワーク経由で読み書きするためのESP32-S3用ファームウェアの構成について解説します。
+ファームウェアを含む全体のシステム構成や、USBホスト機能、ネットワーク経由でシリアルポートを扱う方法について解説します。
+解説するファームウェアのソースコードはGitHubにて公開しています。\footnote{\url{https://github.com/ciniml/serial_wifi_logger}}
+
+本書ではESP32シリーズ向けの開発環境であるESP-IDFを使ったUSBホスト機能を持つファームウェアの開発について解説しますが、USBの通信そのものについては解説しません。
+USB通信の基礎的な内容については既知のものとします。例えばUSBのディスクリプタの内容やエンドポイントごとの転送といったことは扱いません。
+
+\section{開発の背景}\label{ux958bux767aux306eux80ccux666f}
+
+インターネットに接続して動作するIoT機器では、中国Espressif
+SystemsのESP32シリーズをはじめとした無線機能付きMCUが多く使われます。
+
+筆者はESP32シリーズを使ったIoT機器のファームウェア開発を業務で行っていますが、こういったファームウェア開発時に問題となるのが、動作時のログの収集です。
+
+MCUのログは多くの場合はMCUのUART通信機能をもちいて特定のピンから出力されるので、PCにUSB-UART変換器経由で接続し、ログを読みります。
+これらのログをリモートで収集するために、Raspberry
+Piに複数台のFTDI製のUSB-UART変換器を接続し、ログをアップロードするシステムを構築していました。
+この時に用いるUSB-UART変換器は製品のログ収集専用の機器なので、単純にUSB-UART変換を行うだけでなく、特殊な形状の治具となっています。
+しかし、Raspberry
+Pi自体がSBCの中では安価とはいえ、それなりに高く、また設置場所や電源、Linux上での設定が必要などの問題がありました。
+
+一方、ESP32-S3をはじめとする比較的新しいESP32シリーズのMCUは、USBシリアル変換器を内蔵しており、USBの結線を行うだけで直接USB経由でログを読み取ることができます
+従来のUSB-UART変換器であれば、ログを別のESP32で読み出してネットワークに投げるのは問題なく行えましたが、内蔵USBシリアル変換器を使う前提の回路設計となっている場合は、ログを読み取る側がUSBホストとなる必要があります。
+
+幸いなことに、ESP32-S3にはUSBホスト機能があるので、USBホスト機能を用いてFTDIやESP32の内蔵USBシリアル変換器を制御できます。
+そこで、ESP32-S3を使ってUSB-UARTをネットワーク経由で制御するファームウェアを開発しました。
+
+\section{Serial WiFi Logger}\label{serial-wifi-logger}
+
+\textbf{Serial WiFi Logger} は、ESP32-S3 を使用した USB シリアルデバイス
+↔ WiFi 間のブリッジシステムです。USB ポートに接続した CDC-ACM
+準拠デバイスまたは FTDI チップ搭載デバイスを、WiFi 経由で TCP または
+RFC2217 プロトコルを使ってリモートから操作・ログ収集できます。
+
+主な機能は次のとおりです。
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{CDC-ACMとFTDI両対応}: CDC-ACM準拠のデバイス および FTDI
+  デバイスを自動判別して対応
+\item
+  \textbf{RFC2217 サーバー}: pyserial
+  などの標準ライブラリからシリアルポートと同様にアクセス可能
+\item
+  \textbf{TCP データブリッジ}: TCPポート 8888
+  でシリアルデータを双方向転送
+\item
+  \textbf{TCP 制御ポート}: TCPポート 8889 で
+  DTR/RTS/ボーレートをテキストコマンドで制御
+\item
+  \textbf{mDNSによるサービス公開}:
+  \passthrough{\lstinline!serial-XXXXXX.\_serial.\_tcp.local!}
+  としてローカルネットワーク上からmDNSにより名前解決可能
+\item
+  \textbf{WiFi プロビジョニング}:
+  EspressifのSoftAPベースの無線LAN初期設定機能
+\item
+  \textbf{OTA アップデート}: HTTP 経由のファームウェア更新機能
+\end{itemize}
+
+開発環境としては、Espressifが提供するESP32シリーズ向けの標準の開発環境であるESP-IDFを使用します。バージョンは執筆時点での最新のstable版であるESP-IDF
+v6.0です。 また、対象のMCUは ESP32-S3 とします。
+
+\section{対象のハードウェア}\label{ux5bfeux8c61ux306eux30cfux30fcux30c9ux30a6ux30a7ux30a2}
+
+ESP32-S3を搭載した開発用モジュールとして、M5StackのATOMS3
+Liteを使用することを前提とします。 ATOMS3
+Liteは執筆時点でスイッチサイエンスにて1760円で購入可能です。\footnote{https://www.switch-science.com/products/8778?srsltid=AfmBOoqSRRpkvlmOigbM0OC4PJQ86iSYr5kjDNMeyeiGD8EwlAkC0JFo}
+
+\section{ATOMS3
+LiteのUSBホスト機能の制限}\label{atoms3-liteux306eusbux30dbux30b9ux30c8ux6a5fux80fdux306eux5236ux9650}
+
+ATOMS3 LiteはUSBホスト機能を使わない場合は、本体付属のUSB
+Type-Cポートから電源供給やファームウェアの書き込み、デバッグログの出力を行えます。
+USBホスト機能を使う場合は、本体付属のUSB
+Type-Cポートはホスト機能で占有されるため、別途裏面のピンソケットからの電源供給が必要です。
+このため、裏面のピンソケットから別のUSB
+Type-Cケーブルにて電源供給をおこなうためのアダプタ基板を作成しました。
+
+また、デバッグ用のログ出力を行えなくなるので、ログ出力先のUARTのピンをATOMS3
+LiteのGROVE互換ポートのピンに変更し、GROVEケーブルで別のUSB-UARTアダプタを接続できるようにしています。
+
+図 図~\ref{fig:hardware_diagram} にハードウェア構成を示します。
+
+\begin{figure}
+\centering
+\pandocbounded{\includesvg[keepaspectratio]{./figure/hardware_diagram.drawio.svg}}
+\caption{ハードウェア構成}\label{fig:hardware_diagram}
+\end{figure}
+
+\section{ファームウェアの構成}\label{ux30d5ux30a1ux30fcux30e0ux30a6ux30a7ux30a2ux306eux69cbux6210}
+
+Serial WiFi
+Loggerのファームウェアは主に次のモジュールから構成されています。
+
+\begin{itemize}
+\tightlist
+\item
+  USBホスト機能
+
+  \begin{itemize}
+  \tightlist
+  \item
+    CDC-ACMホストドライバ (Espressifのコンポーネント)
+  \item
+    FTDIチップ用ドライバ
+  \end{itemize}
+\item
+  TCP通信機能
+
+  \begin{itemize}
+  \tightlist
+  \item
+    シリアル通信
+  \item
+    制御機能 (DTR,RTS制御等)
+  \end{itemize}
+\item
+  管理機能　
+
+  \begin{itemize}
+  \tightlist
+  \item
+    WiFi接続設定
+  \item
+    OTAアップデート
+  \end{itemize}
+\end{itemize}
+
+以降の章では、これらのモジュールの実装について順に説明していきます。
+
+\chapter{ESP-IDF USB
+ホストドライバの構成}\label{esp-idf-usb-ux30dbux30b9ux30c8ux30c9ux30e9ux30a4ux30d0ux306eux69cbux6210}
+
+\section{USB Host API の概要}\label{usb-host-api-ux306eux6982ux8981}
+
+ESP32-S3 は前述のとおり、USB OTGコントローラを搭載しているため、USB
+Hostになることができます。 USB Host機能をつかうには、ESP-IDF の USB Host
+ライブラリ (\passthrough{\lstinline!usb/usb\_host.h!}) を使います。 USB
+Hostライブラリは次のような階層構造になっています。
+
+\begin{figure}
+\centering
+\pandocbounded{\includesvg[keepaspectratio]{./figure/usb_host_layers.drawio.svg}}
+\caption{USBホストライブラリ層構成}\label{fig:usb_host_layers}
+\end{figure}
+
+CDC-ACM ドライバと FTDI ドライバはどちらも \textbf{USB
+ホストクライアント} として USB Host
+ライブラリに登録され、それぞれが独立してUSBデバイスイベントを受け取ります。
+アプリケーションはどちらのドライバとも直接やりとりしますが、後述するUSBシリアル制御抽象化レイヤーを挟むことでドライバの違いを意識しなくて済むようにしています。
+
+\section{USB
+ホストライブラリの初期化}\label{usb-ux30dbux30b9ux30c8ux30e9ux30a4ux30d6ux30e9ux30eaux306eux521dux671fux5316}
+
+\passthrough{\lstinline!main.c!} の
+\passthrough{\lstinline!usb\_lib\_task!} タスクが USB
+ホストライブラリのイベントループを担います。
+
+\begin{lstlisting}[language=C]
+static void usb_lib_task(void *arg)
+{
+    // USB ホストライブラリを初期化
+    const usb_host_config_t host_config = {
+        .skip_phy_setup = false,
+        .intr_flags = ESP_INTR_FLAG_LEVEL1,
+    };
+    ESP_ERROR_CHECK(usb_host_install(&host_config));
+
+    // ドライバタスクへ通知 (CDC-ACM / FTDI)
+    xTaskNotifyGive(driver_task_handle);
+
+    // USBホストライブラリのイベントを処理
+    bool has_clients = true;
+    bool has_devices = true;
+    while (has_clients || has_devices) {
+        uint32_t event_flags;
+        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
+
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
+            has_clients = false;
+        }
+        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
+            has_devices = false;
+        }
+    }
+    usb_host_uninstall();
+    vTaskDelete(NULL);
+}
+\end{lstlisting}
+
+USB
+ホストライブラリの準備ができる前にクライアントを登録しようとするとエラーになるため
+\passthrough{\lstinline!usb\_host\_install()!}
+の後にドライバタスクへ通知し、ドライバの初期化を許可しています。
+
+\section{USBホストライブラリのクライアントの管理}\label{usbux30dbux30b9ux30c8ux30e9ux30a4ux30d6ux30e9ux30eaux306eux30afux30e9ux30a4ux30a2ux30f3ux30c8ux306eux7ba1ux7406}
+
+ESP-IDF の USB Host ライブラリは、複数のクライアント (ドライバ)
+が同時に動作できる設計になっています。各クライアントは個別のハンドル
+(\passthrough{\lstinline!usb\_host\_client\_handle\_t!})
+を持ち、それぞれが独立してデバイスの接続・切断イベントを受け取ります。
+
+FTDI ドライバは、ドライバ全体の状態を管理するシングルトン構造体
+\passthrough{\lstinline!ftdi\_sio\_obj\_t!} を
+\passthrough{\lstinline!p\_ftdi\_sio\_obj!}
+というファイルスコープの静的ポインタで保持しています。
+
+\begin{lstlisting}[language=C]
+typedef struct {
+    usb_host_client_handle_t ftdi_client_hdl;  // USB Hostクライアントハンドル
+    SemaphoreHandle_t open_close_mutex;         // デバイスopen/closeの排他制御
+    EventGroupHandle_t event_group;             // ドライバ終了シグナル用
+    ftdi_sio_new_dev_callback_t new_dev_cb;    // 新デバイス検出コールバック
+    void *new_dev_cb_arg;
+    SLIST_HEAD(list_dev, ftdi_dev_s) ftdi_devices_list; // 接続デバイスのリスト
+} ftdi_sio_obj_t;
+
+static ftdi_sio_obj_t *p_ftdi_sio_obj = NULL;
+\end{lstlisting}
+
+\passthrough{\lstinline!p\_ftdi\_sio\_obj!} は
+\passthrough{\lstinline!ftdi\_sio\_host\_install()!}
+呼び出し時にヒープ確保・初期化され、\passthrough{\lstinline!ftdi\_sio\_host\_uninstall()!}
+で解放されて \passthrough{\lstinline!NULL!}
+に戻ります。ドライバがインストールされていない状態で API
+を呼び出した場合は \passthrough{\lstinline!ESP\_ERR\_INVALID\_STATE!}
+を返すガード処理がそれぞれの関数冒頭に入っています。
+
+\passthrough{\lstinline!ftdi\_devices\_list!} は BSD リストマクロ
+(\passthrough{\lstinline!SLIST\_!}) を使った単方向リストで、接続中の
+\passthrough{\lstinline!ftdi\_dev\_t!}
+を管理します。デバイスのオープン時にリストへ追加され、クローズ時に削除されます。複数の
+FTDI
+デバイスを同時に接続しても、それぞれが独立したエントリとしてリストで管理されます。
+
+\section{USBホストライブラリへのクライアントの登録}\label{usbux30dbux30b9ux30c8ux30e9ux30a4ux30d6ux30e9ux30eaux3078ux306eux30afux30e9ux30a4ux30a2ux30f3ux30c8ux306eux767bux9332}
+
+各ドライバは \passthrough{\lstinline!usb\_host\_client\_register()!} で
+USB
+ホストライブラリのクライアントとして登録します。登録時にデバイスの接続・切断イベントを受け取るコールバックを渡します。
+FTDI ドライバでの使用例を以下に示します。
+
+\begin{lstlisting}[language=C]
+const usb_host_client_config_t client_config = {
+    .is_synchronous = false,
+    .max_num_event_msg = 5,
+    .async = {
+        .client_event_callback = usb_event_cb,  // イベントコールバック
+        .callback_arg = NULL,
+    },
+};
+usb_host_client_register(&client_config, &p_ftdi_sio_obj->ftdi_client_hdl);
+\end{lstlisting}
+
+\section{USBデバイス検出の通知}\label{usbux30c7ux30d0ux30a4ux30b9ux691cux51faux306eux901aux77e5}
+
+\passthrough{\lstinline!usb\_event\_cb!} は
+\passthrough{\lstinline!USB\_HOST\_CLIENT\_EVENT\_NEW\_DEV!}
+イベントで新しいデバイスの接続を知らせます。
+
+\begin{lstlisting}[language=C]
+static void usb_event_cb(const usb_host_client_event_msg_t *event_msg, void *arg)
+{
+    switch (event_msg->event) {
+    case USB_HOST_CLIENT_EVENT_NEW_DEV:
+        // 新デバイス検出 → アプリケーションの new_dev_cb を呼び出す
+        if (p_ftdi_sio_obj->new_dev_cb) {
+            uint8_t dev_addr = event_msg->new_dev.address;
+            usb_device_handle_t dev_hdl;
+            usb_host_device_open(p_ftdi_sio_obj->ftdi_client_hdl, dev_addr, &dev_hdl);
+            // VID/PID を取得してコールバック
+            const usb_device_desc_t *dev_desc;
+            usb_host_get_device_descriptor(dev_hdl, &dev_desc);
+            p_ftdi_sio_obj->new_dev_cb(dev_desc->idVendor, dev_desc->idProduct,
+                                       p_ftdi_sio_obj->new_dev_cb_arg);
+        }
+        break;
+    }
+}
+\end{lstlisting}
+
+\passthrough{\lstinline!main.c!} 側の
+\passthrough{\lstinline!new\_dev\_cb!} では VID/PID
+を見てドライバを選択します。FTDI デバイス
+(\passthrough{\lstinline!VID=0x0403!}) であれば
+\passthrough{\lstinline!ftdi\_sio\_host\_open()!} を呼び、そうでなければ
+CDC-ACM ドライバに引き渡します。
+
+\section{USB
+転送の仕組み}\label{usb-ux8ee2ux9001ux306eux4ed5ux7d44ux307f}
+
+ESP-IDF の USB Host API では、USBでの転送を
+\passthrough{\lstinline!usb\_transfer\_t!} 構造体で表現します。
+\passthrough{\lstinline!usb\_transfer\_t!}
+構造体のフィールドに転送処理の内容と完了時に呼びだされるコールバック関数を設定し、
+\passthrough{\lstinline!usb\_host\_transfer\_submit!}
+関数を呼び出します。
+
+\begin{lstlisting}[language=C]
+// 転送バッファの確保 (DMA対応バッファ)
+usb_host_transfer_alloc(buffer_size, 0, &transfer);
+
+// 転送パラメータ設定
+transfer->device_handle    = dev_hdl;
+transfer->bEndpointAddress = ep_addr;   // エンドポイントアドレス
+transfer->num_bytes        = buffer_size;
+transfer->callback         = in_xfer_cb; // 完了コールバック
+transfer->context          = ftdi_dev;  // コールバックに渡されるユーザー・コンテキスト 
+
+// 転送の送信 (非同期)
+usb_host_transfer_submit(transfer);
+\end{lstlisting}
+
+転送が完了すると \passthrough{\lstinline!callback!}
+が呼び出されます。バルク IN
+転送の場合、\passthrough{\lstinline!in\_xfer\_cb!}
+でデータを処理したあと、直ちに同じ転送を再サブミットして連続受信を続けます。
+
+\begin{lstlisting}[language=C]
+// in_xfer_cb の最後で再サブミット
+ESP_ERROR_CHECK(usb_host_transfer_submit(transfer));
+\end{lstlisting}
+
+一方、ボーレート変更などの設定コマンドはコントロール転送で送ります。こちらはセマフォを使ったブロッキング方式で、転送完了を待ってから次の処理へ進みます。
+
+\begin{lstlisting}[language=C]
+usb_host_transfer_submit_control(client_hdl, ctrl_transfer);
+xSemaphoreTake(ctrl_transfer_semaphore, pdMS_TO_TICKS(FTDI_CTRL_TIMEOUT_MS));
+\end{lstlisting}
+
+\section{CDC-ACM ドライバ}\label{cdc-acm-ux30c9ux30e9ux30a4ux30d0}
+
+CDC-ACM はUSBの標準クラスで、ESP32 内蔵の USB シリアル変換器や多くの
+USB-UART 変換器がこのクラスを使っています。 ESP-IDF では ESP Component
+Registryのコンポーネント
+\passthrough{\lstinline!espressif/usb\_host\_cdc\_acm!}
+としてCDC-ACMのドライバが提供されています。\footnote{https://components.espressif.com/components/espressif/usb\_host\_cdc\_acm/}
+
+\begin{lstlisting}[language=C]
+// CDC-ACMドライバのインストール
+cdc_acm_host_install(NULL);
+
+// デバイスのオープン
+cdc_acm_host_open(VID, PID, interface_num, &dev_config, &cdc_hdl);
+
+// ライン設定 (ボーレート/データビット/パリティ/ストップビット)
+cdc_acm_line_coding_t coding = {
+    .dwDTERate   = 115200,
+    .bDataBits   = 8,
+    .bParityType = 0,  // None
+    .bCharFormat = 0,  // 1 stop bit
+};
+cdc_acm_host_line_coding_set(cdc_hdl, &coding);
+
+// モデム制御 (DTR/RTS)
+cdc_acm_host_set_control_line_state(cdc_hdl, true, false);  // DTR=ON, RTS=OFF
+
+// データ送信
+cdc_acm_host_data_tx_blocking(cdc_hdl, data, len, timeout_ms);
+\end{lstlisting}
+
+受信データはオープン時に登録したコールバック関数
+(\passthrough{\lstinline!data\_cb!}) で非同期に通知されます。
+
+\chapter{FTDI
+ドライバの詳細実装}\label{ftdi-ux30c9ux30e9ux30a4ux30d0ux306eux8a73ux7d30ux5b9fux88c5}
+
+\section{FTDI
+USBシリアル変換器のプロトコル}\label{ftdi-usbux30b7ux30eaux30a2ux30ebux5909ux63dbux5668ux306eux30d7ux30edux30c8ux30b3ux30eb}
+
+USBシリアル変換器として、FTDI製のUSBシリアル変換器が良く使われます。
+CDC-ACM が USB の標準クラスであるのに対し、FTDI
+デバイスはベンダー固有クラス
+(\passthrough{\lstinline!bDeviceClass=0xFF!})
+を使っており、コントロール転送のコマンドも独自仕様です。そのため、CDC-ACM
+ドライバはそのまま使えず、独自ドライバが必要になります。
+
+本ドライバが対応している FTDI チップは次のとおりです。
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+チップ & PID & ベースクロック & 特徴 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+FT232R & 0x6001 & 3 MHz & 最も一般的なシングルポート \\
+FT232H & 0x6014 & 12 MHz & USB2.0 HS対応 \\
+FT2232D/H/C & 0x6010 & 6 MHz & デュアルポート \\
+FT4232H & 0x6011 & 6 MHz & クアッドポート \\
+FT230X & 0x6015 & 3 MHz & 低コスト版 \\
+\end{longtable}
+
+チップによってベースクロックが異なり、ボーレート計算に影響します。詳細は後述のボーレート除数計算の節で説明します。
+
+\section{FTDIドライバで用いるデータ構造}\label{ftdiux30c9ux30e9ux30a4ux30d0ux3067ux7528ux3044ux308bux30c7ux30fcux30bfux69cbux9020}
+
+\subsection{\texorpdfstring{デバイス構造体
+(\texttt{ftdi\_dev\_t})}{デバイス構造体 (ftdi\_dev\_t)}}\label{ux30c7ux30d0ux30a4ux30b9ux69cbux9020ux4f53-ftdi_dev_t}
+
+デバイスごとの状態は \passthrough{\lstinline!ftdi\_dev\_t!}
+構造体で管理します。\passthrough{\lstinline!esp\_private/ftdi\_host\_common.h!}
+で定義されており、ドライバ内部からのみアクセスします。
+
+\begin{lstlisting}[language=C]
+typedef struct ftdi_dev_s {
+    usb_device_handle_t dev_hdl;       // USB デバイスハンドル
+    usb_config_desc_t *config_desc;    // USB コンフィグレーション記述子
+
+    ftdi_chip_type_t chip_type;        // チップ種別 (232R / 232H 等)
+    uint16_t vid;
+    uint16_t pid;
+
+    struct {
+        usb_transfer_t *in_xfer;       // バルク IN 転送オブジェクト
+        usb_transfer_t *out_xfer;      // バルク OUT 転送オブジェクト
+        uint8_t *in_data_buffer_base;  // IN バッファの先頭アドレス
+        uint16_t in_mps;               // IN エンドポイントの最大パケットサイズ
+        uint16_t out_mps;              // OUT エンドポイントの最大パケットサイズ
+        size_t in_buffer_size;
+        size_t out_buffer_size;
+    } data;
+
+    ftdi_modem_status_t modem_status_current; // 現在のモデム状態
+    ftdi_modem_status_t modem_status_last;    // 前回のモデム状態 (変化検出用)
+
+    ftdi_sio_host_dev_callback_t event_cb;   // イベントコールバック
+    ftdi_sio_data_callback_t data_cb;        // データ受信コールバック
+    void *cb_arg;
+
+    SLIST_ENTRY(ftdi_dev_s) list_entry;      // デバイスリストのリンク
+} ftdi_dev_t;
+\end{lstlisting}
+
+\subsection{\texorpdfstring{モデム状態構造体
+(\texttt{ftdi\_modem\_status\_t})}{モデム状態構造体 (ftdi\_modem\_status\_t)}}\label{ux30e2ux30c7ux30e0ux72b6ux614bux69cbux9020ux4f53-ftdi_modem_status_t}
+
+FTDI デバイスは、バルク IN パケットの\textbf{先頭 2
+バイト}に常にモデム状態を付加します。モデム状態を表す
+\passthrough{\lstinline!ftdi\_modem\_status\_t!} 構造体を次に示します。
+
+\begin{lstlisting}[language=C]
+typedef struct {
+    // バイト 0 (B0): ラインステータス
+    uint8_t data_pending : 1;    // デバイスバッファに未読データあり
+    uint8_t overrun : 1;         // データオーバーランエラー
+    uint8_t parity_error : 1;    // パリティエラー
+    uint8_t framing_error : 1;   // フレーミングエラー
+    uint8_t break_received : 1;  // ブレーク信号受信
+    uint8_t tx_holding_empty : 1; // 送信ホールディングレジスタ空
+    uint8_t tx_empty : 1;        // 送信シフトレジスタ空
+    uint8_t reserved_b0 : 1;
+
+    // バイト 1 (B1): モデムステータス
+    uint8_t cts : 1;             // Clear To Send
+    uint8_t dsr : 1;             // Data Set Ready
+    uint8_t ri : 1;              // Ring Indicator
+    uint8_t rlsd : 1;            // Carrier Detect (RLSD/DCD)
+    uint8_t reserved_b1 : 4;
+} ftdi_modem_status_t;
+\end{lstlisting}
+
+\section{USB
+ディスクリプタの解析}\label{usb-ux30c7ux30a3ux30b9ux30afux30eaux30d7ux30bfux306eux89e3ux6790}
+
+デバイスをオープンする際、まず USB 記述子を解析してバルク IN/OUT
+エンドポイントの情報を取り出します。USB記述子の解析処理は
+\passthrough{\lstinline!ftdi\_host\_descriptor\_parsing.c!}
+に実装しています。
+
+処理の流れは次のとおりです。
+
+\passthrough{\lstinline!usb\_host\_get\_active\_config\_descriptor()!}
+でコンフィグレーション記述子を取得し、インターフェース記述子の中から目的のインターフェース番号を探します。
+見つかったらエンドポイント記述子を順に確認し、\passthrough{\lstinline!EP\_DESC\_GET\_EP\_TYPE()!}
+でバルク・エンドポイントかどうかをチェックします。
+バルク・エンドポイントであれば
+\passthrough{\lstinline!EP\_DESC\_GET\_ADDRESS()!}
+でアドレスを、\passthrough{\lstinline!EP\_DESC\_GET\_MPS()!}
+で最大パケットサイズ (MPS) を取得し、IN/OUTのエンドポイントをそれぞれ
+\passthrough{\lstinline!in\_ep\_addr!} /
+\passthrough{\lstinline!out\_ep\_addr!} /
+\passthrough{\lstinline!in\_mps!} / \passthrough{\lstinline!out\_mps!}
+に保存します。
+
+\section{ベンダー固有コントロールリクエストの構築}\label{ux30d9ux30f3ux30c0ux30fcux56faux6709ux30b3ux30f3ux30c8ux30edux30fcux30ebux30eaux30afux30a8ux30b9ux30c8ux306eux69cbux7bc9}
+
+FTDI デバイスの設定変更はすべて USB
+のコントロール転送で行います。各リクエストは
+\passthrough{\lstinline!ftdi\_control\_request\_t!} 構造体で表します。
+
+\begin{lstlisting}[language=C]
+typedef struct {
+    uint8_t  request;  // FTDI SIO リクエストコード
+    uint16_t value;    // wValue フィールド
+    uint16_t index;    // wIndex フィールド (インターフェース番号)
+} ftdi_control_request_t;
+\end{lstlisting}
+
+FTDI 固有のリクエストコードを 表~\ref{tbl:ftdi_request_code}
+に示します。
+
+\begin{longtable}[]{@{}lll@{}}
+\caption{\label{tbl:ftdi_request_code}FTDI固有のリクエスト・コード}\tabularnewline
+\toprule\noalign{}
+コード & 値 & 説明 \\
+\midrule\noalign{}
+\endfirsthead
+\toprule\noalign{}
+コード & 値 & 説明 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+FTDI\_SIO\_RESET & 0 & デバイス/バッファリセット \\
+FTDI\_SIO\_SET\_MODEM\_CTRL & 1 & DTR/RTS 制御 \\
+FTDI\_SIO\_SET\_FLOW\_CTRL & 2 & フロー制御設定 \\
+FTDI\_SIO\_SET\_BAUDRATE & 3 & ボーレート設定 \\
+FTDI\_SIO\_SET\_DATA & 4 & データビット/パリティ/ストップビット \\
+FTDI\_SIO\_GET\_MODEM\_STATUS & 5 & モデム状態取得 \\
+FTDI\_SIO\_SET\_LATENCY\_TIMER & 9 & レイテンシタイマー設定 \\
+\end{longtable}
+
+\subsection{モデム制御コマンドの構築}\label{ux30e2ux30c7ux30e0ux5236ux5fa1ux30b3ux30deux30f3ux30c9ux306eux69cbux7bc9}
+
+DTR/RTS の制御は \passthrough{\lstinline!FTDI\_SIO\_SET\_MODEM\_CTRL!}
+リクエストで行います。\passthrough{\lstinline!wValue!} の上位バイトに
+\textbf{どの信号を制御するか}
+のマスクを、下位バイトに信号値を格納します。
+
+\begin{lstlisting}[language=C]
+esp_err_t ftdi_protocol_build_set_modem_ctrl(ftdi_control_request_t *req_out,
+                                              bool dtr, bool rts)
+{
+    // wValue の構造:
+    //   上位バイト: 制御対象のマスク
+    //   下位バイト: 信号値 (1 = High, 0 = Low)
+    //   DTR は bit 0、RTS は bit 1
+    uint16_t value = 0;
+
+    value |= FTDI_SIO_SET_DTR_MASK << 8;  // DTRの出力を変更
+    if (dtr) value |= FTDI_SIO_SET_DTR_MASK;
+
+    value |= FTDI_SIO_SET_RTS_MASK << 8;  // RTSの出力を変更
+    if (rts) value |= FTDI_SIO_SET_RTS_MASK;
+
+    req_out->request = FTDI_SIO_SET_MODEM_CTRL;
+    req_out->value = value;
+    req_out->index = 0;
+    return ESP_OK;
+}
+\end{lstlisting}
+
+\subsection{ラインプロパティの構築}\label{ux30e9ux30a4ux30f3ux30d7ux30edux30d1ux30c6ux30a3ux306eux69cbux7bc9}
+
+データビット・パリティ・ストップビットは
+\passthrough{\lstinline!FTDI\_SIO\_SET\_DATA!} リクエストで設定します。
+データビット・パリティ・ストップビットを
+\passthrough{\lstinline!wValue!} の対応するビットに格納します。
+
+\begin{lstlisting}[language=C]
+// wValue ビットフィールド:
+//   bits[7:0]   = データビット数 (7 または 8)
+//   bits[10:8]  = パリティ (None=0, Odd=1, Even=2, Mark=3, Space=4)
+//   bits[13:11] = ストップビット (1=0, 1.5=1, 2=2)
+uint16_t value = bits | (parity << 8) | (stype << 11);
+
+req_out->request = FTDI_SIO_SET_DATA;
+req_out->value = value;
+\end{lstlisting}
+
+\section{ボーレート除数計算}\label{ux30dcux30fcux30ecux30fcux30c8ux9664ux6570ux8a08ux7b97}
+
+FTDI
+チップのボーレート設定は、ベースクロックを整数と分数の除数で分周して行います。単純な整数による分周では特定のボーレートしか実現できないため、分数による分周の仕組みが用意されています。
+まずはチップの種別からボーレート計算のベースクロックを決定します。
+
+\begin{lstlisting}[language=C]
+switch (chip_type) {
+case FTDI_CHIP_TYPE_232R:
+case FTDI_CHIP_TYPE_230X:
+    base_clock = 3000000;   // 3 MHz
+    break;
+case FTDI_CHIP_TYPE_232H:
+    base_clock = 12000000;  // 12 MHz
+    break;
+case FTDI_CHIP_TYPE_2232D:
+case FTDI_CHIP_TYPE_4232H:
+    base_clock = 6000000;   // 6 MHz
+    break;
+}
+\end{lstlisting}
+
+除数は 3 ビットの分数部分を持ちます。まず
+\passthrough{\lstinline!base\_clock * 8 / baudrate!} を計算して 8
+倍精度の除数を求め、整数部と分数部に分解します。
+
+\begin{lstlisting}[language=C]
+// 8倍精度で除数を計算
+uint32_t divisor = (base_clock * 8) / baudrate;
+
+uint32_t integral_part   = divisor >> 3;   // 整数部
+uint32_t fractional_part = divisor & 0x07; // 小数部 (0〜7)
+\end{lstlisting}
+
+分数部は対応する値を直接マップするのではなく、
+FTDI独自のマッピングとなっています。 分数部に対応するビット列を
+\passthrough{\lstinline!wValue!} の上位 2 ビットと
+\passthrough{\lstinline!wIndex!} にエンコードします。
+
+\begin{lstlisting}[language=C]
+// 分数部のビットマッピング (FTDI 仕様書より)
+switch (fractional_part) {
+    case 0b000: divisor_encoded |= (0b000 << 14); break; // .000
+    case 0b001: divisor_encoded |= (0b011 << 14); break; // .125
+    case 0b010: divisor_encoded |= (0b010 << 14); break; // .250
+    case 0b011: divisor_encoded |= (0b100 << 14); break; // .375
+    case 0b100: divisor_encoded |= (0b001 << 14); break; // .500
+    case 0b101: divisor_encoded |= (0b101 << 14); break; // .625
+    case 0b110: divisor_encoded |= (0b110 << 14); break; // .750
+    case 0b111: divisor_encoded |= (0b111 << 14); break; // .875
+}
+
+// エンコード済み除数の下位 16 bit → wValue
+// エンコード済み除数の上位 16 bit → wIndex
+*value_out = divisor_encoded & 0xFFFF;
+*index_out = (divisor_encoded >> 16) & 0xFFFF;
+\end{lstlisting}
+
+注意が必要なのは、分数部のビット順が線形でない点です。たとえば
+\passthrough{\lstinline!.125!} は \passthrough{\lstinline!0b001!}
+ではなく \passthrough{\lstinline!0b011!}、\passthrough{\lstinline!.5!}
+は \passthrough{\lstinline!0b100!} ではなく
+\passthrough{\lstinline!0b001!} にマッピングされます。
+このようなマッピングになっている理由は不明ですが、 FTDI
+のハードウェア仕様として、FTDI のアプリケーションノート AN\_232R-01
+に記載されています。
+
+\section{モデム状態の 2
+バイトヘッダー処理}\label{ux30e2ux30c7ux30e0ux72b6ux614bux306e-2-ux30d0ux30a4ux30c8ux30d8ux30c3ux30c0ux30fcux51e6ux7406}
+
+FTDI デバイスのバルク IN パケットには、すべてのパケットの先頭 2
+バイトにモデム状態が付加されます。 注意点として、1 回のバルク IN
+転送で複数の長さ \passthrough{\lstinline!MPS!}
+のパケットが返ってくる場合があります。
+この場合は各パケットがそれぞれ独立した 2
+バイトのモデム状態を表さ素ヘッダーを持ちます。
+
+\begin{lstlisting}
+バルク IN 転送データ (例: MPS=64, 2パケット受信の場合):
+ Offset  0: [status_B0][status_B1][data_0]...[data_61]  ← パケット1 (64バイト)
+ Offset 64: [status_B0][status_B1][data_0]...[data_61]  ← パケット2 (64バイト)
+\end{lstlisting}
+
+そのため \passthrough{\lstinline!in\_xfer\_cb!}
+では、転送バッファ全体を一気に処理するのではなく、MPS
+単位でパケットを切り出しながら処理します。
+
+\begin{lstlisting}[language=C]
+static void in_xfer_cb(usb_transfer_t *transfer)
+{
+    ftdi_dev_t *ftdi_dev = (ftdi_dev_t *)transfer->context;
+    size_t total_bytes = transfer->actual_num_bytes;
+    size_t offset = 0;
+    const uint16_t mps = ftdi_dev->data.in_mps;
+
+    // MPS 単位でパケットを処理
+    while (offset < total_bytes) {
+        size_t chunk_size = (total_bytes - offset) > mps ?
+                            mps : (total_bytes - offset);
+
+        if (chunk_size >= 2) {
+            // 先頭 2 バイトからモデム状態を解析
+            ftdi_modem_status_t new_status;
+            ftdi_protocol_parse_modem_status(
+                transfer->data_buffer + offset, &new_status);
+
+            // モデム状態が変化した場合はイベントコールバックを呼び出す
+            if (memcmp(&new_status, &ftdi_dev->modem_status_current,
+                       sizeof(ftdi_modem_status_t)) != 0) {
+                ftdi_dev->modem_status_current = new_status;
+                if (ftdi_dev->event_cb) {
+                    ftdi_dev->event_cb(FTDI_SIO_HOST_MODEM_STATUS,
+                                      ftdi_dev->cb_arg);
+                }
+            }
+
+            // 先頭 2 バイトをスキップして実データをコールバックに渡す
+            size_t data_len = chunk_size - 2;
+            if (data_len > 0 && ftdi_dev->data_cb) {
+                ftdi_dev->data_cb(transfer->data_buffer + offset + 2,
+                                  data_len, ftdi_dev->cb_arg);
+            }
+        }
+
+        offset += chunk_size;
+    }
+
+    // 次の受信のために転送を再サブミット (連続ポーリング)
+    ESP_ERROR_CHECK(usb_host_transfer_submit(transfer));
+}
+\end{lstlisting}
+
+モデム状態バイトの解析は
+\passthrough{\lstinline!ftdi\_protocol\_parse\_modem\_status()!}
+で行います。バイト 1 のモデムステータスは上位 4
+ビットに格納されている点に注意が必要です。
+
+\begin{lstlisting}[language=C]
+esp_err_t ftdi_protocol_parse_modem_status(const uint8_t data[2],
+                                            ftdi_modem_status_t *status_out)
+{
+    // バイト 0: ラインステータス
+    status_out->data_pending     = (data[0] >> 0) & 0x01;
+    status_out->overrun          = (data[0] >> 1) & 0x01;
+    status_out->parity_error     = (data[0] >> 2) & 0x01;
+    status_out->framing_error    = (data[0] >> 3) & 0x01;
+    status_out->break_received   = (data[0] >> 4) & 0x01;
+    status_out->tx_holding_empty = (data[0] >> 5) & 0x01;
+    status_out->tx_empty         = (data[0] >> 6) & 0x01;
+
+    // バイト 1: モデムステータス (上位 4 ビットに格納)
+    status_out->cts  = (data[1] >> 4) & 0x01;
+    status_out->dsr  = (data[1] >> 5) & 0x01;
+    status_out->ri   = (data[1] >> 6) & 0x01;
+    status_out->rlsd = (data[1] >> 7) & 0x01;  // Carrier Detect
+
+    return ESP_OK;
+}
+\end{lstlisting}
+
+\section{データの送信}\label{ux30c7ux30fcux30bfux306eux9001ux4fe1}
+
+TCP → USB 方向のデータ送信は
+\passthrough{\lstinline!ftdi\_sio\_host\_data\_tx\_blocking()!}
+で行います。
+
+\begin{lstlisting}[language=C]
+esp_err_t ftdi_sio_host_data_tx_blocking(ftdi_sio_dev_hdl_t ftdi_hdl,
+        const uint8_t *data, size_t data_len, uint32_t timeout_ms)
+{
+    ftdi_dev_t *ftdi_dev = (ftdi_dev_t *)ftdi_hdl;
+
+    xSemaphoreTake(ftdi_dev->data.out_mux, portMAX_DELAY);
+
+    memcpy(ftdi_dev->data.out_xfer->data_buffer, data, data_len);
+    ftdi_dev->data.out_xfer->num_bytes    = data_len;
+    ftdi_dev->data.out_xfer->timeout_ms  = timeout_ms;
+
+    esp_err_t err = usb_host_transfer_submit(ftdi_dev->data.out_xfer);
+
+    xSemaphoreGive(ftdi_dev->data.out_mux);
+    return err;
+}
+\end{lstlisting}
+
+\passthrough{\lstinline!out\_mux!} セマフォで OUT
+転送の多重発行を防ぎます。バルク IN とは異なり、バルク OUT
+は都度サブミットして完了を待ちます。
+
+\section{FTDIドライバの処理全体}\label{ftdiux30c9ux30e9ux30a4ux30d0ux306eux51e6ux7406ux5168ux4f53}
+
+FTDI ドライバの初期化から終了までの流れをまとめると次のようになります。
+
+\begin{lstlisting}
+ftdi_sio_host_install()
+    │
+    ├── p_ftdi_sio_obj を確保・初期化
+    ├── usb_host_client_register() でクライアント登録
+    └── ftdi_client_task を起動
+
+    (デバイス接続イベント)
+    │
+    ├── usb_event_cb(USB_HOST_CLIENT_EVENT_NEW_DEV)
+    └── new_dev_cb(vid, pid) → アプリに通知
+
+ftdi_sio_host_open(vid, pid, interface, config, &hdl)
+    │
+    ├── ftdi_dev_t を確保
+    ├── USB デバイスをオープン (usb_host_device_open)
+    ├── USB 記述子を解析してエンドポイント情報を取得
+    ├── バルク IN/OUT 転送バッファを確保 (usb_host_transfer_alloc)
+    ├── チップ種別を VID/PID から判定
+    ├── デバイスリセット (FTDI_SIO_RESET)
+    ├── レイテンシタイマー設定 (FTDI_SIO_SET_LATENCY_TIMER)
+    └── バルク IN 転送を開始 (usb_host_transfer_submit) → 連続ポーリング開始
+
+    (データ受信)
+    │
+    └── in_xfer_cb → モデム状態除去 → data_cb → アプリに通知
+
+ftdi_sio_host_close(hdl)
+    │
+    ├── エンドポイントを停止・フラッシュ (usb_host_endpoint_halt/flush)
+    ├── 転送バッファを解放 (usb_host_transfer_free)
+    └── USB デバイスをクローズ (usb_host_device_close)
+
+ftdi_sio_host_uninstall()
+    │
+    └── クライアントを登録解除 (usb_host_client_deregister)
+\end{lstlisting}
+
+\chapter{RFC2217
+プロトコルの実装}\label{rfc2217-ux30d7ux30edux30c8ux30b3ux30ebux306eux5b9fux88c5}
+
+\section{RFC2217の概要}\label{rfc2217ux306eux6982ux8981}
+
+RFC2217\footnote{https://www.rfc-editor.org/rfc/rfc2217.html} は 1996
+年に策定された Telnet 拡張プロトコルで、TCP
+接続上でリモートのシリアルポートを制御できます。 Telnet オプション番号
+44 (\passthrough{\lstinline!TELNET\_COM\_PORT\_OPTION!})
+を使ってリモートのシリアルポートのボーレート・データビット・DTR/RTS
+などを制御し、シリアルポートに流すデータは Telnet の IAC
+エスケープ処理を施したうえでそのまま流します。
+
+このプロトコルを採用した大きな理由は、Python の
+\passthrough{\lstinline!pyserial!}
+ライブラリが対応しているからです。つまり、pyserialを用いている
+\passthrough{\lstinline!esptool.py!}
+などの既存のシリアル通信コードのポート名を変えるだけで、ほぼそのままリモート対応にできます。
+
+\begin{lstlisting}[language=Python]
+import serial
+# RFC2217経由でシリアルポートにアクセス
+ser = serial.serial_for_url("rfc2217://192.168.1.100:2217", baudrate=115200)
+ser.write(b"Hello")
+data = ser.read(10)
+\end{lstlisting}
+
+\section{Telnet
+プロトコル基礎}\label{telnet-ux30d7ux30edux30c8ux30b3ux30ebux57faux790e}
+
+RFC2217 は Telnet の IAC (Interpret As Command,
+\passthrough{\lstinline!0xFF!}) の仕組みを用います。
+\passthrough{\lstinline!0xFF!}
+に続くバイトがコマンドを表し、コマンドに続くバイトがオプション番号やパラメータを表します。
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+バイト値 & 定数 & 意味 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+0xFF & TELNET\_IAC & コマンドの開始 \\
+0xFB & TELNET\_WILL & オプション有効化を申告 \\
+0xFC & TELNET\_WONT & オプション無効化を申告 \\
+0xFD & TELNET\_DO & オプション有効化を要求 \\
+0xFE & TELNET\_DONT & オプション無効化を要求 \\
+0xFA & TELNET\_SB & サブネゴシエーション開始 \\
+0xF0 & TELNET\_SE & サブネゴシエーション終了 \\
+\end{longtable}
+
+送信するデータ列中に \passthrough{\lstinline!0xFF!}
+バイトが出現した場合は、\passthrough{\lstinline!0xFF 0xFF!}
+とエスケープして IAC と区別します。
+
+\subsection{オプションネゴシエーション
+(WILL/WONT/DO/DONT)}\label{ux30aaux30d7ux30b7ux30e7ux30f3ux30cdux30b4ux30b7ux30a8ux30fcux30b7ux30e7ux30f3-willwontdodont}
+
+Telnet
+のオプションは「使う/使わない」を双方向で合意してから有効になります。4
+種類のコマンドを組み合わせて交渉します。
+
+\begin{longtable}[]{@{}ll@{}}
+\toprule\noalign{}
+コマンド & 意味 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+IAC WILL X & 「私はオプション X を有効にする」と申告 \\
+IAC WONT X & 「私はオプション X を有効にしない」と申告 \\
+IAC DO X & 「あなたはオプション X を有効にしてほしい」と要求 \\
+IAC DONT X & 「あなたはオプション X を無効にしてほしい」と要求 \\
+\end{longtable}
+
+RFC2217 では接続直後にサーバーが
+\passthrough{\lstinline!WILL COM-PORT-OPTION!} と
+\passthrough{\lstinline!DO COM-PORT-OPTION!} を送り、クライアントが
+\passthrough{\lstinline!DO COM-PORT-OPTION!} と
+\passthrough{\lstinline!WILL COM-PORT-OPTION!} で応答することで COM
+ポート制御オプションが有効になります。本実装ではさらに、8
+ビットデータを正しく転送するための \passthrough{\lstinline!BINARY!}
+オプション (RFC 856) と、Go Ahead シグナルを省略する
+\passthrough{\lstinline!SGA!} オプション (RFC 858)
+も同時にネゴシエートします。
+
+\subsection{サブネゴシエーション (IAC SB \ldots{} IAC SE)
+の役割}\label{ux30b5ux30d6ux30cdux30b4ux30b7ux30a8ux30fcux30b7ux30e7ux30f3-iac-sb-iac-se-ux306eux5f79ux5272}
+
+オプションが有効になった後、具体的なパラメータ (ボーレートの値など)
+を交換するしくみがサブネゴシエーションです。\passthrough{\lstinline!IAC SB [オプション番号] [データ] IAC SE!}
+の形式で送受信します。RFC2217
+の場合、\passthrough{\lstinline!SET\_BAUDRATE!} や
+\passthrough{\lstinline!SET\_DATASIZE!}
+といったコマンドがこの仕組みで運ばれます。
+
+\section{RFC2217のコマンド体系}\label{rfc2217ux306eux30b3ux30deux30f3ux30c9ux4f53ux7cfb}
+
+RFC2217 のコマンドは、クライアントからサーバーに送るコマンドが
+\passthrough{\lstinline!0〜12!}、サーバーからクライアントへの応答がコマンドに対して
+100 を加算した値で定義されています。
+
+\begin{longtable}[]{@{}llll@{}}
+\toprule\noalign{}
+コマンド値 & 定数 & 応答値 & 説明 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+0 & RFC2217\_SIGNATURE & 100 & サーバー識別文字列の交換 \\
+1 & RFC2217\_SET\_BAUDRATE & 101 & ボーレート設定 (4バイト
+big-endian) \\
+2 & RFC2217\_SET\_DATASIZE & 102 & データビット数 (5〜8) \\
+3 & RFC2217\_SET\_PARITY & 103 & パリティ設定 \\
+4 & RFC2217\_SET\_STOPSIZE & 104 & ストップビット数 \\
+5 & RFC2217\_SET\_CONTROL & 105 & DTR/RTS/ブレーク/フロー制御 \\
+6 & RFC2217\_NOTIFY\_LINESTATE & 106 & ライン状態通知 \\
+7 & RFC2217\_NOTIFY\_MODEMSTATE & 107 & モデム状態通知
+(CTS/DSR/RI/CD) \\
+10 & RFC2217\_SET\_LINESTATE\_MASK & 110 & ライン状態通知マスク \\
+11 & RFC2217\_SET\_MODEMSTATE\_MASK & 111 & モデム状態通知マスク \\
+12 & RFC2217\_PURGE\_DATA & 112 & バッファのパージ \\
+\end{longtable}
+
+\section{RFC2217受信データの解析処理}\label{rfc2217ux53d7ux4fe1ux30c7ux30fcux30bfux306eux89e3ux6790ux51e6ux7406}
+
+Telnet
+のコマンドシーケンスは複数バイトにまたがるため、1バイトごと処理をし状態を更新して解析します。
+
+\begin{lstlisting}[language=C]
+typedef enum {
+    RFC2217_STATE_DATA,      // 通常データモード
+    RFC2217_STATE_IAC,       // IAC (0xFF) を受信済み
+    RFC2217_STATE_WILL,      // IAC WILL を受信済み (次のバイトはオプション番号)
+    RFC2217_STATE_WONT,      // IAC WONT を受信済み
+    RFC2217_STATE_DO,        // IAC DO を受信済み
+    RFC2217_STATE_DONT,      // IAC DONT を受信済み
+    RFC2217_STATE_SB,        // IAC SB を受信済み (サブネゴシエーション開始)
+    RFC2217_STATE_SB_DATA,   // サブネゴシエーションデータ収集中
+    RFC2217_STATE_SB_IAC,    // サブネゴシエーション中に IAC を受信
+} rfc2217_parser_state_t;
+\end{lstlisting}
+
+状態遷移を図にすると次のようになります。
+
+\begin{figure}
+\centering
+\pandocbounded{\includesvg[keepaspectratio]{./figure/rfc2217_state.drawio.svg}}
+\caption{RFC2217パーサーの状態遷移}\label{fig:rfc2217_state}
+\end{figure}
+
+コアとなる \passthrough{\lstinline!rfc2217\_parse\_byte()!}
+の実装を抜粋します。 \passthrough{\lstinline!DATA!} 状態で
+\passthrough{\lstinline!TELNET\_IAC == 0xFF!}
+以外のバイトを受信した場合そのままデータとして出力します。
+\passthrough{\lstinline!0xFF!} を受信した場合は
+\passthrough{\lstinline!IAC!} 状態へ遷移します。
+\passthrough{\lstinline!IAC!} 状態で再度 \passthrough{\lstinline!0xFF!}
+を受け取った場合はエスケープされた \passthrough{\lstinline!0xFF!}
+として出力します。
+
+\begin{lstlisting}[language=C]
+rfc2217_result_t rfc2217_parse_byte(rfc2217_session_t *session, uint8_t byte,
+                                     uint8_t *out_data, size_t *out_len)
+{
+    *out_len = 0;
+
+    switch (session->state) {
+    case RFC2217_STATE_DATA:
+        if (byte == TELNET_IAC) {
+            session->state = RFC2217_STATE_IAC;
+            return RFC2217_RESULT_CONTINUE;
+        }
+        // 通常データ: そのまま出力
+        out_data[0] = byte;
+        *out_len = 1;
+        return RFC2217_RESULT_DATA;
+
+    case RFC2217_STATE_IAC:
+        if (byte == TELNET_IAC) {
+            // エスケープされた 0xFF → 1バイトの 0xFF として出力
+            session->state = RFC2217_STATE_DATA;
+            out_data[0] = TELNET_IAC;
+            *out_len = 1;
+            return RFC2217_RESULT_DATA;
+        }
+        // WILL/WONT/DO/DONT/SB への状態遷移
+        // ...
+    }
+}
+\end{lstlisting}
+
+\section{セッション状態構造体}\label{ux30bbux30c3ux30b7ux30e7ux30f3ux72b6ux614bux69cbux9020ux4f53}
+
+RFC2217 のセッション状態は \passthrough{\lstinline!rfc2217\_session\_t!}
+構造体にまとめています。パーサー状態やネゴシエーション状態に加え、現在のシリアルポート設定とペンディング中のアクションフラグも保持します。
+
+\begin{lstlisting}[language=C]
+typedef struct {
+    rfc2217_parser_state_t state;     // パーサー状態
+
+    // サブネゴシエーションバッファ (最大64バイト)
+    uint8_t sb_buffer[RFC2217_SB_BUFFER_SIZE];
+    size_t sb_len;
+
+    // オプションネゴシエーション状態
+    bool com_port_enabled;
+    bool client_will_com_port;
+    bool client_do_com_port;
+
+    // 現在のシリアルポート設定
+    uint32_t baudrate;    // デフォルト: 115200
+    uint8_t datasize;     // RFC2217_DATASIZE_* (5〜8)
+    uint8_t parity;       // RFC2217_PARITY_*
+    uint8_t stopsize;     // RFC2217_STOPSIZE_*
+    uint8_t flowcontrol;  // RFC2217_CONTROL_FLOW_*
+    bool dtr, rts, break_state;
+
+    // 通知マスク
+    uint8_t linestate_mask;   // デフォルト: 0xFF (全ビット通知)
+    uint8_t modemstate_mask;  // デフォルト: 0xFF
+
+    // 保留中のアクションフラグ
+    bool settings_changed;        // いずれかの設定が変更された
+    bool line_coding_changed;     // ボーレート/データビット等が変更された
+    bool modem_control_changed;   // DTR/RTS が変更された
+    bool break_changed;           // ブレーク状態が変更された
+    bool send_modemstate;
+    bool send_linestate;
+
+    // レスポンス生成用
+    uint8_t last_command;
+    uint8_t last_control_value;
+    bool need_signature_response;
+    bool need_option_response;
+    uint8_t option_response_cmd;
+    uint8_t option_response_opt;
+
+    char signature[RFC2217_SIGNATURE_SIZE]; // "ESP32-S3 Serial WiFi Logger"
+} rfc2217_session_t;
+\end{lstlisting}
+
+設定変更時は即座にシリアルポートへ反映するのではなく、\passthrough{\lstinline!settings\_changed!}
+などのフラグを立てるにとどめます。サーバータスクがフラグを確認してシリアル制御
+API を呼び出す、という 2
+フェーズ構成になっており、設定の適用タイミングをコントロールできます。
+
+\section{ネゴシエーションシーケンス}\label{ux30cdux30b4ux30b7ux30a8ux30fcux30b7ux30e7ux30f3ux30b7ux30fcux30b1ux30f3ux30b9}
+
+TCP
+接続が確立すると、サーバーからすぐにネゴシエーションを開始します。pyserial
+との実際のシーケンスは次のようになります。
+
+\begin{figure}
+\centering
+\pandocbounded{\includesvg[keepaspectratio]{figure/rfc2217_negotiation.mmd.svg}}
+\caption{RFC2217ネゴシエーションシーケンス}\label{fig:rfc2217_negotiation}
+\end{figure}
+
+\section{サブネゴシエーション処理}\label{ux30b5ux30d6ux30cdux30b4ux30b7ux30a8ux30fcux30b7ux30e7ux30f3ux51e6ux7406}
+
+サブネゴシエーション (\passthrough{\lstinline!IAC SB ... IAC SE!})
+を受け取ると、\passthrough{\lstinline!process\_subnegotiation()!} が
+\passthrough{\lstinline!sb\_buffer!}
+に蓄積されたデータを解析してセッション状態を更新します。
+
+例としてボーレートを設定する \passthrough{\lstinline!SET\_BAUDRATE!}
+の処理は次のようになります。 ボーレートは 4 バイトの big-endian
+で渡されます。値が \passthrough{\lstinline!0!}
+の場合は現在値の問い合わせという意味なので変更しません。
+
+\begin{lstlisting}[language=C]
+case RFC2217_SET_BAUDRATE:
+    if (value_len >= 4) {
+        uint32_t baudrate = ((uint32_t)value[0] << 24) |
+                           ((uint32_t)value[1] << 16) |
+                           ((uint32_t)value[2] << 8)  |
+                           ((uint32_t)value[3]);
+        if (baudrate == 0) {
+            // 0 = 現在の設定を問い合わせ (変更なし)
+        } else {
+            session->baudrate = baudrate;
+            session->settings_changed = true;
+            session->line_coding_changed = true;
+        }
+    }
+    break;
+\end{lstlisting}
+
+\passthrough{\lstinline!SET\_CONTROL!} は
+DTR・RTS・ブレーク・フロー制御をまとめて扱います。値によって意味が変わるため、switch
+文で各ケースを処理します。
+
+SET-CONTROL の値と意味を以下にまとめます。
+
+\begin{longtable}[]{@{}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}
+  >{\raggedright\arraybackslash}p{(\linewidth - 4\tabcolsep) * \real{0.3333}}@{}}
+\toprule\noalign{}
+\begin{minipage}[b]{\linewidth}\raggedright
+値
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+定数
+\end{minipage} & \begin{minipage}[b]{\linewidth}\raggedright
+説明
+\end{minipage} \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+0 & RFC2217\_CONTROL\_FLOW\_REQUEST &
+現在のフロー制御設定を問い合わせ \\
+1 & RFC2217\_CONTROL\_FLOW\_NONE & フロー制御なし \\
+2 & RFC2217\_CONTROL\_FLOW\_XONXOFF & XON/XOFF フロー制御 \\
+3 & RFC2217\_CONTROL\_FLOW\_HARDWARE & ハードウェア (RTS/CTS)
+フロー制御 \\
+4 & RFC2217\_CONTROL\_BREAK\_REQUEST & 現在のブレーク状態を問い合わせ \\
+5 & RFC2217\_CONTROL\_BREAK\_ON & ブレーク信号 ON \\
+6 & RFC2217\_CONTROL\_BREAK\_OFF & ブレーク信号 OFF \\
+7 & RFC2217\_CONTROL\_DTR\_REQUEST & 現在の DTR 状態を問い合わせ \\
+8 & RFC2217\_CONTROL\_DTR\_ON & DTR ON \\
+9 & RFC2217\_CONTROL\_DTR\_OFF & DTR OFF \\
+10 & RFC2217\_CONTROL\_RTS\_REQUEST & 現在の RTS 状態を問い合わせ \\
+11 & RFC2217\_CONTROL\_RTS\_ON & RTS ON \\
+12 & RFC2217\_CONTROL\_RTS\_OFF & RTS OFF \\
+13 & RFC2217\_CONTROL\_INFLOW\_REQUEST &
+現在の受信フロー制御設定を問い合わせ \\
+14 & RFC2217\_CONTROL\_INFLOW\_NONE & 受信フロー制御なし \\
+15 & RFC2217\_CONTROL\_INFLOW\_XONXOFF & 受信 XON/XOFF \\
+16 & RFC2217\_CONTROL\_INFLOW\_HARDWARE & 受信ハードウェアフロー制御 \\
+\end{longtable}
+
+\begin{lstlisting}[language=C]
+case RFC2217_CONTROL_DTR_ON:
+    session->dtr = true;
+    session->settings_changed = true;
+    session->modem_control_changed = true;
+    break;
+
+case RFC2217_CONTROL_BREAK_ON:
+    session->break_state = true;
+    session->settings_changed = true;
+    session->break_changed = true;
+    break;
+\end{lstlisting}
+
+\section{RFC2217パケット生成}\label{rfc2217ux30d1ux30b1ux30c3ux30c8ux751fux6210}
+
+サーバー (ESP32側) からクライアントへのレスポンスは
+\passthrough{\lstinline!rfc2217\_build\_!} で始まる関数で生成します。
+すべてのサブネゴシエーションパケットは
+\passthrough{\lstinline!IAC SB COM-PORT-OPTION [cmd] [data...] IAC SE!}
+の形式となっており、\passthrough{\lstinline!rfc2217\_build\_subneg()!}
+を用いてパケットを組み立てます。データ部に
+\passthrough{\lstinline!0xFF!}
+が含まれる場合はエスケープ処理も行います。
+
+\begin{lstlisting}[language=C]
+size_t rfc2217_build_subneg(uint8_t cmd, const uint8_t *value,
+                            size_t value_len, uint8_t *out)
+{
+    size_t pos = 0;
+    out[pos++] = TELNET_IAC;             // 0xFF
+    out[pos++] = TELNET_SB;              // 0xFA
+    out[pos++] = TELNET_COM_PORT_OPTION; // 0x2C (44)
+    out[pos++] = cmd;                    // コマンドコード
+
+    // データ部 (IAC はエスケープ)
+    for (size_t i = 0; i < value_len; i++) {
+        if (value[i] == TELNET_IAC) {
+            out[pos++] = TELNET_IAC;     // エスケープ
+        }
+        out[pos++] = value[i];
+    }
+
+    out[pos++] = TELNET_IAC;             // 0xFF
+    out[pos++] = TELNET_SE;              // 0xF0
+    return pos;
+}
+\end{lstlisting}
+
+ボーレートの応答は 4 バイト big-endian、モデム状態通知は 1
+バイトで、それぞれ \passthrough{\lstinline!rfc2217\_build\_subneg()!}
+を呼んでパケットを生成します。
+
+\begin{lstlisting}[language=C]
+// ボーレート応答 (4バイト big-endian)
+size_t rfc2217_build_baudrate_response(uint32_t baudrate, uint8_t *out)
+{
+    uint8_t value[4];
+    value[0] = (baudrate >> 24) & 0xFF;
+    value[1] = (baudrate >> 16) & 0xFF;
+    value[2] = (baudrate >> 8)  & 0xFF;
+    value[3] =  baudrate        & 0xFF;
+    return rfc2217_build_subneg(RFC2217_RESP_SET_BAUDRATE, value, 4, out);
+}
+
+// モデム状態通知 (1バイト)
+// bit 7: CD, bit 6: RI, bit 5: DSR, bit 4: CTS
+// bit 3: Delta CD, bit 2: Delta RI, bit 1: Delta DSR, bit 0: Delta CTS
+size_t rfc2217_build_modemstate(uint8_t state, uint8_t *out)
+{
+    return rfc2217_build_subneg(RFC2217_RESP_NOTIFY_MODEMSTATE, &state, 1, out);
+}
+\end{lstlisting}
+
+\section{RFC2217サーバーの構成}\label{rfc2217ux30b5ux30fcux30d0ux30fcux306eux69cbux6210}
+
+\passthrough{\lstinline!rfc2217\_server.c!} の
+\passthrough{\lstinline!rfc2217\_server\_task!}
+がサーバーの本体です。\passthrough{\lstinline!SO\_REUSEADDR!}
+を設定したリスニングソケットをポート 2217
+で作成し、\passthrough{\lstinline!accept()!}
+でクライアントの接続を待ちます。同時接続は 1 クライアントのみです。
+
+接続が来たら初期ネゴシエーション (\passthrough{\lstinline!WILL BINARY!}
+/ \passthrough{\lstinline!DO BINARY!} /
+\passthrough{\lstinline!WILL SGA!} / \passthrough{\lstinline!DO SGA!} /
+\passthrough{\lstinline!WILL COM-PORT-OPTION!} /
+\passthrough{\lstinline!DO COM-PORT-OPTION!})
+を送信し、受信ループへ入ります。受信ループでは
+\passthrough{\lstinline!recv()!} で取り込んだバイトを 1 バイトずつ
+\passthrough{\lstinline!rfc2217\_parse\_byte()!} に投入します。
+
+\begin{itemize}
+\tightlist
+\item
+  \passthrough{\lstinline!RFC2217\_RESULT\_DATA!}: バイトを
+  \passthrough{\lstinline!tx\_batch!} バッファに蓄積する
+\item
+  \passthrough{\lstinline!RFC2217\_RESULT\_COMMAND!}:
+  \passthrough{\lstinline!tx\_batch!} に溜まったデータを
+  \passthrough{\lstinline!serial\_control\_transmit()!}
+  でフラッシュしてからシリアル設定を適用し、レスポンスを送信する
+\end{itemize}
+
+RFC2217 サーバーは TCP/USB
+ブリッジとは別経路でデータを送受信します。クライアントから受け取ったシリアルデータは
+\passthrough{\lstinline!tcp\_to\_usb\_queue!} を経由せず、直接
+\passthrough{\lstinline!serial\_control\_transmit()!} で USB
+デバイスへ送ります。逆方向 (USB → クライアント) は
+\passthrough{\lstinline!rfc2217\_server\_send\_data()!} 関数経由で
+\passthrough{\lstinline!send()!} を呼び出します。
+
+コマンド受信後の設定適用と応答送信は
+\passthrough{\lstinline!apply\_serial\_settings()!} と
+\passthrough{\lstinline!send\_response()!} が担います。
+
+\begin{lstlisting}[language=C]
+case RFC2217_RESULT_COMMAND:
+    // tx_batch に溜まったデータをまずフラッシュ
+    if (tx_batch_len > 0) {
+        serial_control_transmit(tx_batch, tx_batch_len, 1000);
+        tx_batch_len = 0;
+    }
+    // シリアル設定を適用
+    if (s_server.session.settings_changed) {
+        apply_serial_settings(&s_server.session);
+        s_server.session.settings_changed = false;
+    }
+    // レスポンスをクライアントへ送信
+    send_response(sock, &s_server.session);
+    break;
+\end{lstlisting}
+
+\passthrough{\lstinline!apply\_serial\_settings()!}
+内で各フラグを確認してシリアル制御 API を呼び出します。
+
+\begin{lstlisting}[language=C]
+// apply_serial_settings() の内部
+if (session->line_coding_changed) {
+    serial_line_coding_t coding = {
+        .baudrate  = session->baudrate,
+        .data_bits = session->datasize,
+        .parity    = rfc2217_parity_to_serial(session->parity),
+        .stop_bits = rfc2217_stopsize_to_serial(session->stopsize),
+    };
+    serial_control_set_line_coding(&coding);
+}
+if (session->modem_control_changed) {
+    serial_control_set_modem_control(session->dtr, session->rts);
+}
+if (session->break_changed) {
+    serial_control_set_break(session->break_state);
+}
+\end{lstlisting}
+
+\section{モデム状態のポーリング}\label{ux30e2ux30c7ux30e0ux72b6ux614bux306eux30ddux30fcux30eaux30f3ux30b0}
+
+\passthrough{\lstinline!rfc2217\_modem\_poll\_task!} は、FTDI
+デバイス接続時のモデム状態 (CTS/DSR/RI/CD) をポーリングして RFC2217
+クライアントへ通知するためのタスクです。
+
+CDC-ACM
+デバイスはモデム状態の変化を割り込みエンドポイントから自発的に通知しますが、FTDI
+デバイスはそのような仕組みがなく、\passthrough{\lstinline!FTDI\_SIO\_GET\_MODEM\_STATUS!}
+コントロールリクエストで明示的に読み出す必要があります。そのため、別タスクで定期的にポーリングしています。
+
+\begin{lstlisting}[language=C]
+static void rfc2217_modem_poll_task(void *arg)
+{
+    while (rfc2217_server_running) {
+        if (rfc2217_server_is_connected()) {
+            serial_modem_status_t status;
+            if (serial_control_get_modem_status(&status) == ESP_OK) {
+                // 状態が変化した場合のみ通知
+                if (memcmp(&status, &last_status, sizeof(status)) != 0) {
+                    last_status = status;
+                    uint8_t state = 0;
+                    if (status.cts) state |= RFC2217_MODEMSTATE_CTS;
+                    if (status.dsr) state |= RFC2217_MODEMSTATE_DSR;
+                    if (status.ri)  state |= RFC2217_MODEMSTATE_RI;
+                    if (status.cd)  state |= RFC2217_MODEMSTATE_CD;
+                    rfc2217_server_notify_modemstate(status.cts, status.dsr,
+                                                     status.ri, status.cd);
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(CONFIG_RFC2217_MODEM_POLL_INTERVAL_MS));
+    }
+    vTaskDelete(NULL);
+}
+\end{lstlisting}
+
+ポーリング間隔はデフォルト 100ms
+で、\passthrough{\lstinline!menuconfig!} の
+\passthrough{\lstinline!RFC2217\_MODEM\_POLL\_INTERVAL\_MS!}
+で変更できます。
+
+\section{IAC
+エスケープとデータ送信}\label{iac-ux30a8ux30b9ux30b1ux30fcux30d7ux3068ux30c7ux30fcux30bfux9001ux4fe1}
+
+USB から受信したデータを RFC2217
+クライアントへ送る際は、\passthrough{\lstinline!0xFF!}
+バイトをエスケープしてから送信します。
+
+\begin{lstlisting}[language=C]
+size_t rfc2217_escape_data(const uint8_t *in, size_t in_len,
+                           uint8_t *out, size_t out_size)
+{
+    size_t j = 0;
+    for (size_t i = 0; i < in_len && j < out_size - 1; i++) {
+        if (in[i] == TELNET_IAC) {
+            // 0xFF → 0xFF 0xFF (2バイトに拡張)
+            out[j++] = TELNET_IAC;
+            if (j < out_size) out[j++] = TELNET_IAC;
+        } else {
+            out[j++] = in[i];
+        }
+    }
+    return j;
+}
+\end{lstlisting}
+
+最悪の場合、すべてのバイトが \passthrough{\lstinline!0xFF!}
+であれば出力は入力の 2 倍になります。出力バッファは入力の 2
+倍以上のサイズが必要です。
+
+\chapter{シリアル制御抽象化レイヤー}\label{ux30b7ux30eaux30a2ux30ebux5236ux5fa1ux62bdux8c61ux5316ux30ecux30a4ux30e4ux30fc}
+
+\section{設計思想}\label{ux8a2dux8a08ux601dux60f3}
+
+RFC2217 サーバーやコントロールポートのコードが CDC-ACM と FTDI
+の両方を意識するのは煩雑です。そこで
+\passthrough{\lstinline!serial\_control.h!} /
+\passthrough{\lstinline!serial\_control.c!} が抽象化レイヤーとして両者の
+API の違いを吸収します。 これによりデバイス種別を気にせず、統一した API
+でシリアルポートを操作できます。
+
+\section{シリアル制御抽象化レイヤーのAPI}\label{ux30b7ux30eaux30a2ux30ebux5236ux5fa1ux62bdux8c61ux5316ux30ecux30a4ux30e4ux30fcux306eapi}
+
+シリアル制御抽象化レイヤーのAPIを以下に示します。
+
+\begin{lstlisting}[language=C]
+bool serial_control_is_connected(void);
+
+// ライン設定 (ボーレート/データビット/パリティ/ストップビット)
+esp_err_t serial_control_set_line_coding(const serial_line_coding_t *coding);
+esp_err_t serial_control_get_line_coding(serial_line_coding_t *coding);
+esp_err_t serial_control_set_baudrate(uint32_t baudrate);
+esp_err_t serial_control_get_baudrate(uint32_t *baudrate);
+
+// DTR/RTS 制御
+esp_err_t serial_control_set_dtr(bool state);
+esp_err_t serial_control_set_rts(bool state);
+esp_err_t serial_control_set_modem_control(bool dtr, bool rts);
+
+// モデム状態読み出し
+esp_err_t serial_control_get_modem_status(serial_modem_status_t *status);
+
+// ブレーク信号制御
+esp_err_t serial_control_set_break(bool on);
+
+// データ送信
+esp_err_t serial_control_transmit(const uint8_t *data, size_t len,
+                                   uint32_t timeout_ms);
+\end{lstlisting}
+
+\section{内部実装}\label{ux5185ux90e8ux5b9fux88c5}
+
+各関数の内部では \passthrough{\lstinline!current\_device->type!} で
+CDC-ACM か FTDI かを判別し、それぞれのドライバ API を呼び出します。
+例としてUARTのボーレートやフォーマットを設定する
+\passthrough{\lstinline!serial\_control\_set\_line\_coding!}
+の実装を示します。
+
+\begin{lstlisting}[language=C]
+esp_err_t serial_control_set_line_coding(const serial_line_coding_t *coding)
+{
+    if (!serial_control_is_connected()) return ESP_ERR_INVALID_STATE;
+
+    xSemaphoreTake(device_mutex, portMAX_DELAY);
+    esp_err_t ret;
+
+    if (current_device->type == DEVICE_TYPE_CDC) {
+        cdc_acm_line_coding_t cdc_coding = {
+            .dwDTERate   = coding->baudrate,
+            .bDataBits   = coding->data_bits,
+            .bParityType = coding->parity,
+            .bCharFormat = coding->stop_bits,
+        };
+        ret = cdc_acm_host_line_coding_set(
+                  current_device->handle.cdc_hdl, &cdc_coding);
+
+    } else if (current_device->type == DEVICE_TYPE_FTDI) {
+        ret = ftdi_sio_host_set_baudrate(
+                  current_device->handle.ftdi_hdl, coding->baudrate);
+        if (ret == ESP_OK) {
+            ret = ftdi_sio_host_set_line_property(
+                      current_device->handle.ftdi_hdl,
+                      coding->data_bits,
+                      coding->stop_bits,
+                      coding->parity);
+        }
+    }
+
+    xSemaphoreGive(device_mutex);
+    return ret;
+}
+\end{lstlisting}
+
+デバイスがビジー状態で \passthrough{\lstinline!ESP\_ERR\_NOT\_FINISHED!}
+を返した場合は、\passthrough{\lstinline!SERIAL\_CTRL\_RETRY\_COUNT!}
+回まで \passthrough{\lstinline!SERIAL\_CTRL\_RETRY\_INTERVAL\_MS!} ms
+間隔でリトライします。
+
+\chapter{TCPサーバー機能}\label{tcpux30b5ux30fcux30d0ux30fcux6a5fux80fd}
+
+\section{TCP データサーバー (Port
+8888)}\label{tcp-ux30c7ux30fcux30bfux30b5ux30fcux30d0ux30fc-port-8888}
+
+\passthrough{\lstinline!tcp\_server\_task!} がポート 8888
+でリスニングソケットを作成し、TCP
+クライアントからの接続を待ちます。同時接続は 1
+クライアントのみで、新しいクライアントが接続してきた場合は既存の接続をクローズしてから受け入れます。
+
+クライアントから受信したデータはバッファプールに格納したうえで
+\passthrough{\lstinline!tcp\_to\_usb\_queue!}
+に積み、\passthrough{\lstinline!tcp\_usb\_bridge\_task!} が USB
+デバイスへ転送します。 クライアント接続中は mDNS の TXT レコードの
+\passthrough{\lstinline!state!} フィールドを
+\passthrough{\lstinline!"open"!} に更新し、切断時に
+\passthrough{\lstinline!"disconnected"!}
+へ戻すことで、クライアント側がデバイスの状態をリモートから確認できます。
+
+\begin{lstlisting}[language=C]
+// 受信データをバッファプールに入れてキューに積む
+data_buffer_t *buf = buffer_alloc();
+memcpy(buf->data, rx_buffer, len);
+buf->len = len;
+xQueueSend(tcp_to_usb_queue, &buf, 0);
+\end{lstlisting}
+
+USB から受信したデータは
+\passthrough{\lstinline!usb\_to\_tcp\_bridge\_task!} が
+\passthrough{\lstinline!usb\_to\_tcp\_queue!} から取り出して
+\passthrough{\lstinline!send()!}
+でクライアントへ転送します。同一データを RFC2217
+クライアントへも同時に配信するため、\passthrough{\lstinline!rfc2217\_server\_send\_data()!}
+も呼び出します。
+
+\section{TCP 制御サーバー (Port
+8889)}\label{tcp-ux5236ux5fa1ux30b5ux30fcux30d0ux30fc-port-8889}
+
+\passthrough{\lstinline!control\_server\_task!} はポート 8889
+でテキストコマンドを受け付け、USB シリアルデバイスの DTR・RTS
+信号やボーレートをリモートから制御できます。RFC2217
+サーバーと異なり、Telnet
+プロトコルは使わず、単純な改行区切りのテキストコマンドを使用します。
+
+コマンドの書式と動作を次に示します。
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+コマンド & 書式 & 説明 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+DTR & DTR 0 または DTR 1 & DTR 信号の Low/High 設定 \\
+RTS & RTS 0 または RTS 1 & RTS 信号の Low/High 設定 \\
+BAUD & BAUD & ボーレートの変更 (300〜921600) \\
+VERSION & VERSION & ファームウェアバージョンの取得 \\
+\end{longtable}
+
+コマンドが成功した場合は \passthrough{\lstinline!OK\\n!}、失敗した場合は
+\passthrough{\lstinline!ERROR\\n!}
+をレスポンスとして返します。\passthrough{\lstinline!VERSION!}
+コマンドのみ、\passthrough{\lstinline!OK\\n!} の代わりにバージョン文字列
+(例: \passthrough{\lstinline!v1.0.0\\n!}) を返します。
+
+\begin{lstlisting}
+$ nc 192.168.1.100 8889
+DTR 1
+OK
+BAUD 9600
+OK
+VERSION
+v1.2.0
+\end{lstlisting}
+
+\section{バッファプール管理}\label{ux30d0ux30c3ux30d5ux30a1ux30d7ux30fcux30ebux7ba1ux7406}
+
+ヒープの断片化を防ぐため、起動時に 512 バイトバッファを
+\passthrough{\lstinline!DATA\_BUFFER\_POOL\_SIZE!} 個 (デフォルト 64 個)
+まとめて確保し、静的プールとして使い回しています。
+
+\begin{lstlisting}[language=C]
+typedef struct {
+    uint8_t data[512];  // データバッファ
+    size_t  len;        // 有効データ長
+    bool    in_use;     // 使用中フラグ
+} data_buffer_t;
+
+typedef struct {
+    data_buffer_t buffers[CONFIG_DATA_BUFFER_POOL_SIZE];
+    SemaphoreHandle_t mutex;
+} buffer_pool_t;
+\end{lstlisting}
+
+バッファの確保は \passthrough{\lstinline!in\_use == false!}
+のバッファを線形探索して返します。プールが枯渇した場合は
+\passthrough{\lstinline!NULL!}
+を返してデータをドロップし、警告ログを出力します。
+
+\section{双方向キューアーキテクチャ}\label{ux53ccux65b9ux5411ux30adux30e5ux30fcux30a2ux30fcux30adux30c6ux30afux30c1ux30e3}
+
+USB ↔ TCP のデータ転送は 2 つの FreeRTOS
+キューで分離されています。キューに積むのはデータ本体ではなく、バッファプールから確保したポインタです。
+
+\textbf{USB → TCP (上り方向)}
+
+\passthrough{\lstinline!usb\_data\_callback!}
+でデータを受け取ったら、バッファプールからバッファを確保してデータをコピーし、ポインタを
+\passthrough{\lstinline!usb\_to\_tcp\_queue!}
+に積みます。\passthrough{\lstinline!usb\_tcp\_bridge\_task!}
+がキューからポインタを取り出し、TCP クライアントと RFC2217
+クライアントの両方に配信します。RFC2217 クライアントへの送信時は IAC
+エスケープを行います。
+
+\textbf{TCP → USB (下り方向)}
+
+TCP または RFC2217
+から受け取ったデータはバッファプールに格納し、\passthrough{\lstinline!tcp\_to\_usb\_queue!}
+に積みます。\passthrough{\lstinline!tcp\_usb\_bridge\_task!}
+がキューからポインタを取り出し、\passthrough{\lstinline!serial\_control\_transmit()!}
+でUSBデバイスに送ります。
+
+\section{USBデバイス状態管理}\label{usbux30c7ux30d0ux30a4ux30b9ux72b6ux614bux7ba1ux7406}
+
+USBデバイスの接続・切断は非同期に発生するため、ブリッジタスクが処理中にUSBデバイスが切断されてもクラッシュしないよう管理が必要です。
+
+\begin{lstlisting}[language=C]
+typedef enum {
+    DEVICE_STATE_DETECTED,      // デバイス検出済み
+    DEVICE_STATE_OPENING,       // オープン処理中
+    DEVICE_STATE_OPEN,          // 通信可能
+    DEVICE_STATE_ERROR,         // エラー状態
+    DEVICE_STATE_DISCONNECTED   // 切断済み
+} device_state_t;
+\end{lstlisting}
+
+USBデバイスの切断イベントが来ると、ドライバのコールバックが
+\passthrough{\lstinline!disconnected\_sem!} をGive
+します。これを受け取ったタスクが
+\passthrough{\lstinline!current\_device!} を
+\passthrough{\lstinline!NULL!} に設定し、ブリッジタスクは
+\passthrough{\lstinline!serial\_control\_is\_connected()!}
+でこの変化を検知して転送を一時停止します。
+
+\chapter{WiFi接続設定と
+mDNS}\label{wifiux63a5ux7d9aux8a2dux5b9aux3068-mdns}
+
+\section{WiFi 接続設定}\label{wifi-ux63a5ux7d9aux8a2dux5b9a}
+
+初回起動時に NVS に WiFi 接続情報がない場合は、SoftAP
+モードでWiFi接続設定を開始します。スマートフォンの「ESP SoftAP
+Prov」アプリで \passthrough{\lstinline!PROV\_XXXXXX!}
+という名前のアクセスポイントに接続し、WiFi の SSID
+とパスワードを入力すると NVS に保存されます。 セキュリティバージョン 1
+(デフォルト) では PoP (Proof of Possession) コード
+\passthrough{\lstinline!abcd1234!}
+による認証が必要で、意図しない第三者が認証情報を書き換えられないようになっています。
+
+\section{mDNS
+サービスの公開}\label{mdns-ux30b5ux30fcux30d3ux30b9ux306eux516cux958b}
+
+WiFi 接続後は mDNS で自身をネットワーク上に公開します。
+
+\begin{lstlisting}
+サービス名: serial-A02048 (MAC アドレス下3バイトを16進表記)
+サービス型: _serial._tcp
+ポート: 8888 (データポート)
+
+TXT レコード:
+  version = "1.0.0"
+  control_port = "8889"
+  rfc2217_port = "2217"
+  device = "none" / "CDC:0x1234:0x5678" / "FTDI:0x0403:0x6001"
+  state = "disconnected" / "open"
+\end{lstlisting}
+
+クライアントは \passthrough{\lstinline!\_serial.\_tcp.local!} サービスを
+mDNS で問い合わせることで、IP アドレスを知らなくても Serial WiFi Logger
+のアドレスを見つけられます。 TXT
+レコードはデバイスの接続・切断に応じて動的に更新されるので、現在のデバイス状態もここから確認できます。
+
+\chapter{OTA
+アップデート機能}\label{ota-ux30a2ux30c3ux30d7ux30c7ux30fcux30c8ux6a5fux80fd}
+
+\passthrough{\lstinline!ota\_server.c!} はポート 80 で HTTP
+サーバーを起動し、Web UI とアップデート API を提供します。
+
+\begin{longtable}[]{@{}lll@{}}
+\toprule\noalign{}
+エンドポイント & メソッド & 説明 \\
+\midrule\noalign{}
+\endhead
+\bottomrule\noalign{}
+\endlastfoot
+/ & GET & Web UI (HTML/CSS/JS) \\
+/api/info & GET & デバイス情報 (JSON) \\
+/api/ota & POST & ファームウェア書き込み (バイナリ) \\
+\end{longtable}
+
+\begin{figure}
+\centering
+\pandocbounded{\includesvg[keepaspectratio]{figure/ota_sequence.mmd.svg}}
+\caption{OTAアップデートの処理フロー}\label{fig:ota_sequence}
+\end{figure}
+
+書き込み時は \passthrough{\lstinline!esp\_ota\_begin()!}
+でアクティブでない OTA スロットを選択し、HTTP POST
+ボディを逐次受信しながら \passthrough{\lstinline!esp\_ota\_write()!}
+でフラッシュに書き込みます。全データの書き込みが完了したら
+\passthrough{\lstinline!esp\_ota\_end()!}
+で整合性を確認し、\passthrough{\lstinline!esp\_ota\_set\_boot\_partition()!}
+でブートパーティションを切り替えて再起動します。
+
+\passthrough{\lstinline!OTA\_ENABLE\_ROLLBACK!}
+が有効な場合、新ファームウェアは起動後に
+\passthrough{\lstinline!esp\_ota\_mark\_app\_valid\_cancel\_rollback()!}
+を呼び出して自分自身を「有効」とマークしなければなりません。これを行わずに再起動すると、ブートローダーが旧ファームウェアへ自動ロールバックします。
+
+\chapter{使用例}\label{ux4f7fux7528ux4f8b}
+
+\section{esptool.py
+による遠隔ファームウェア書き込み}\label{esptool.py-ux306bux3088ux308bux9060ux9694ux30d5ux30a1ux30fcux30e0ux30a6ux30a7ux30a2ux66f8ux304dux8fbcux307f}
+
+Serial WiFi Logger の RFC2217 サーバーを使うと、USB
+ケーブルを差し替えることなく、ネットワーク越しに接続先の MCU
+へファームウェアを書き込めます。\passthrough{\lstinline!esptool.py!} は
+\passthrough{\lstinline!rfc2217://!} 形式の URL
+をシリアルポートとして直接扱えるため、ほぼそのままの手順で使えます。
+
+\begin{lstlisting}[language=bash]
+# 通常のUSB接続の場合
+esptool.py --port /dev/ttyUSB0 --baud 2000000 \
+    write_flash 0x0 firmware.bin
+
+# RFC2217 経由 (Serial WiFi Logger 使用) の場合
+esptool.py --port rfc2217://192.168.1.100:2217 --baud 2000000 \
+    write_flash 0x0 firmware.bin
+\end{lstlisting}
+
+mDNS が使える環境であれば IP
+アドレスの代わりにホスト名を使うこともできます。
+
+\begin{lstlisting}[language=bash]
+esptool.py --port "rfc2217://serial-A02048.local:2217" --baud 2000000 \
+    write_flash 0x0 firmware.bin
+\end{lstlisting}
+
+DTR/RTS 経由でのリセット・ブートモード切り替えも RFC2217 の SET-CONTROL
+コマンドで転送されるため、esptool.py
+のオートリセット機能もそのまま動作します。
+
+\backmatter
+\thispagestyle{empty}
+
+
+\vspace*{\stretch{1}}
+
+\begin{center}
+\textsf{ESP32-S3でUSB-UARTをネットワーク経由で制御する}
+
+\begin{tabular}{ll}
+初版 & 2026年04月12日 \\
+\end{tabular}
+
+\begin{tabular}{ll} \toprule
+    発行      & Kenta IDA \\
+    著者      & Kenta IDA (@ciniml) \\
+    連絡先    & \verb|fuga@fugafuga.org| \\
+        Twitter & \verb|@ciniml| \\
+        GitHub & \verb|https://github.com/ciniml/| \\
+        \bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}

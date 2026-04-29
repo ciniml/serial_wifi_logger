@@ -1,6 +1,7 @@
 #include "ota_server.h"
 #include "ota_web_ui.h"
 #include "version.h"
+#include "web_settings.h"
 
 #include <string.h>
 #include <sys/param.h>
@@ -247,12 +248,18 @@ esp_err_t ota_server_init(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = CONFIG_OTA_HTTP_SERVER_PORT;
-    config.max_uri_handlers = 8;
-    config.max_open_sockets = 4;
+    config.max_uri_handlers = 16;   /* OTA endpoints + web_settings endpoints */
+    /* The Web UI fires 4–5 API requests in parallel on initial load, plus
+     * the page itself and a favicon probe. With the previous limit of 4 the
+     * server returned ENFILE on accept(); 7 covers a typical browser's
+     * parallel-request fan-out. Requires CONFIG_LWIP_MAX_SOCKETS to leave
+     * headroom for the rest of the firmware (control TLS, DERP TLS, the
+     * other TCP listeners). */
+    config.max_open_sockets = 7;
     config.stack_size = 6144;
     config.lru_purge_enable = true;
-    config.recv_wait_timeout = 10;
-    config.send_wait_timeout = 10;
+    config.recv_wait_timeout = 5;
+    config.send_wait_timeout = 5;
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
 
@@ -286,6 +293,9 @@ esp_err_t ota_server_init(void)
         .user_ctx = NULL
     };
     httpd_register_uri_handler(server, &uri_api_ota);
+
+    /* Register Web-UI VPN settings endpoints on the same server. */
+    web_settings_register(server);
 
     ESP_LOGI(TAG, "HTTP server started successfully");
     ESP_LOGI(TAG, "OTA web UI available at: http://<device-ip>:%d/",

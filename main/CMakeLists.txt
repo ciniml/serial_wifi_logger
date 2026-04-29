@@ -72,15 +72,20 @@ idf_component_register(SRCS main.c
                             rfc2217_protocol.c
                             rfc2217_server.c
                             serial_control.c
+                            web_settings.c
                     INCLUDE_DIRS "."
                     PRIV_REQUIRES espressif__usb_host_cdc_acm
                                   usb_host_ftdi_sio
                                   espressif__mdns
+                                  espressif__cjson
                                   esp_wifi
+                                  esp_eth
                                   lwip
                                   nvs_flash
                                   esp_http_server
                                   app_update
+                                  wireguard
+                                  tailscale
                     )
 
 # Add compile definitions for version information

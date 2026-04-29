@@ -1,5 +1,7 @@
 # Target Configuration
 CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="8MB"
 
 # WiFi Provisioning
 CONFIG_NETWORK_PROV_NETWORK_TYPE_WIFI=y
@@ -25,6 +27,52 @@ CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_HTTPD_MAX_URI_LEN=512
 CONFIG_HTTPD_WS_SUPPORT=n
+
+# lwIP: Enable LWIP_ESP_NETIF_DATA so netif->state is available for raw lwIP
+# netifs (e.g. WireGuard) without conflicting with esp_netif's internal pointer.
+# Without this, esp_netif_internal_dhcpc_cb() casts netif->state as esp_netif_t*
+# and crashes when WireGuard stores its own device context there.
+# CONFIG_LWIP_PPP_SUPPORT triggers LWIP_ESP_NETIF_DATA=1 in lwipopts.h;
+# no PPP interface is actually created — this is purely a build-time switch.
+CONFIG_LWIP_PPP_SUPPORT=y
+
+# Tailscale / WireGuard: increase max peers for managed mode.
+# Tailscale tailnets can have many peers; we accept the SRAM cost (~800 B each).
+CONFIG_WIREGUARD_MAX_PEERS=16
+
+# WG decryption + lwIP TCP processing happens off-thread when DERP packets
+# arrive (the DERP recv task calls ip_input directly). Default 3 KiB stack
+# overflows; bump to 8 KiB.
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=8192
+
+# Core locking lets non-tcpip threads (specifically the DERP recv task) call
+# into ip_input/tcp_input safely under LOCK_TCPIP_CORE. Without this lock,
+# concurrent TCP state-machine access from app threads would corrupt pcbs.
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y
+
+# Increase the system-wide socket pool. The default 10 is exhausted very
+# quickly when the HTTP server, two TLS sessions (control + DERP), the
+# RFC2217 / TCP-bridge / control listeners, and the browser's parallel
+# requests are all live at once — observed as `httpd_accept_conn: error in
+# accept (23)` (ENFILE) when loading the Web UI.
+CONFIG_LWIP_MAX_SOCKETS=16
+
+
+# TLS CA store: needed for HTTPS connections to login.tailscale.com and DERP servers
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# Increase TLS handshake buffer for large certificates from CDN-hosted DERP servers
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
+
+# Dynamic TLS RX/TX buffers — without this, every active TLS context permanently
+# holds 16 KiB IN + 4 KiB OUT, and we run two simultaneous TLS sessions
+# (control to login.tailscale.com and DERP). On real hardware this exhausts
+# heap during DERP cert-chain verification, surfacing as bogus
+# "PK verify failed". With dynamic buffers mbedTLS allocates only while
+# actively reading/writing a record.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 
 # Custom UART configuration for logging
 CONFIG_ESP_CONSOLE_UART_CUSTOM=y
