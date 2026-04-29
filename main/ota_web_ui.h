@@ -69,6 +69,9 @@ static const char ota_html[] =
 
 /* ---------- Tailscale panel ---------- */
 "<div class=\"panel\" id=\"panel-tailscale\">"
+"<div class=\"msg info\" id=\"ts-auth-url-box\" style=\"display:none\">"
+"<strong>Approval required.</strong> Open this URL in a browser signed in to your tailnet to approve this device:<br><a id=\"ts-auth-url\" target=\"_blank\" rel=\"noopener\"></a>"
+"</div>"
 "<label class=\"field\"><input type=\"checkbox\" id=\"ts-enabled\"><span style=\"display:inline\">Enable Tailscale (mutually exclusive with WireGuard)</span></label>"
 "<label class=\"field\"><span>Hostname</span><input type=\"text\" id=\"ts-hostname\" placeholder=\"esp32-serial\"></label>"
 "<label class=\"field\"><span>Control Server</span><input type=\"text\" id=\"ts-control\" placeholder=\"login.tailscale.com\"></label>"
@@ -155,6 +158,9 @@ static const char ota_html[] =
 "$('ts-hostname').value=d.hostname||'';"
 "$('ts-control').value=d.control_server||'';"
 "$('ts-auth-hint').textContent=d.auth_key_set?('current: '+(d.auth_key_hint||'set')):'no auth_key configured';"
+"var urlBox=$('ts-auth-url-box'),urlA=$('ts-auth-url');"
+"if(d.auth_url){urlA.href=d.auth_url;urlA.textContent=d.auth_url;urlBox.style.display='block'}"
+"else{urlBox.style.display='none';urlA.removeAttribute('href');urlA.textContent=''}"
 "}catch(e){setMsg('ts-msg','Failed to load: '+e.message,'err')}"
 "}"
 "async function saveTailscale(){"

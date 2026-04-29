@@ -309,19 +309,26 @@ static esp_err_t handler_tailscale_get(httpd_req_t *req)
     bool key_set = auth_key[0] != '\0';
     if (key_set) mask_auth_key(auth_key, hint, sizeof(hint));
 
-    char body[400];
+    /* Pending interactive-approval URL (non-empty when the device must be
+     * approved at this URL before tailnet traffic can flow — e.g. the
+     * configured auth_key was empty/expired/already-consumed). */
+    char auth_url[200] = {0};
+    tailscale_esp32_get_auth_url(auth_url, sizeof(auth_url));
+
+    char body[600];
     int n = snprintf(body, sizeof(body),
         "{"
           "\"enabled\":%s,"
           "\"hostname\":\"%s\","
           "\"control_server\":\"%s\","
           "\"auth_key_set\":%s,"
-          "\"auth_key_hint\":\"%s\""
+          "\"auth_key_hint\":\"%s\","
+          "\"auth_url\":\"%s\""
         "}",
         enabled ? "true" : "false",
         hostname, ctrl_srv,
         key_set ? "true" : "false",
-        hint);
+        hint, auth_url);
     if (n < 0 || n >= (int)sizeof(body)) {
         return send_json_error(req, 500, "tailscale config formatting overflow");
     }

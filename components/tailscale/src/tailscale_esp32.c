@@ -237,3 +237,11 @@ esp_err_t tailscale_esp32_get_ip(char *ip_str, size_t ip_str_len)
     ts_netmap_get_self_ip(ip_str, ip_str_len);
     return (ip_str[0] != '\0') ? ESP_OK : ESP_ERR_INVALID_STATE;
 }
+
+esp_err_t tailscale_esp32_get_auth_url(char *url_str, size_t url_str_len)
+{
+    if (!url_str || url_str_len == 0) return ESP_ERR_INVALID_ARG;
+    const char *src = ts_ctrl_get_auth_url();
+    strlcpy(url_str, src ? src : "", url_str_len);
+    return ESP_OK;
+}
