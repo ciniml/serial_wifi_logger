@@ -435,7 +435,7 @@ esp_err_t wireguard_esp32_set_address(const char *local_ip,
     ip4addr_aton(local_netmask, &netmask4);
     ip4addr_aton("0.0.0.0",     &gateway4);
     netif_set_addr(s_wg_netif, &ipaddr4, &netmask4, &gateway4);
-    ESP_LOGI(TAG, "WireGuard address updated: %s / %s", local_ip, local_netmask);
+    ESP_LOGD(TAG, "WireGuard address updated: %s / %s", local_ip, local_netmask);
     return ESP_OK;
 }
 
@@ -490,7 +490,7 @@ esp_err_t wireguard_esp32_add_peer(const char      *public_key_b64,
     }
 
     *peer_index_out = idx;
-    ESP_LOGI(TAG, "WireGuard peer added: index=%d port=%d", idx, port);
+    ESP_LOGD(TAG, "WireGuard peer added: index=%d port=%d", idx, port);
     return ESP_OK;
 }
 
@@ -524,7 +524,7 @@ esp_err_t wireguard_esp32_remove_peer(uint8_t peer_index)
     }
     wireguardif_disconnect(s_wg_netif, peer_index);
     wireguardif_remove_peer(s_wg_netif, peer_index);
-    ESP_LOGI(TAG, "WireGuard peer removed: index=%d", peer_index);
+    ESP_LOGD(TAG, "WireGuard peer removed: index=%d", peer_index);
     return ESP_OK;
 }
 

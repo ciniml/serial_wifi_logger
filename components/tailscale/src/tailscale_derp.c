@@ -420,7 +420,7 @@ static void derp_recv_task(void *arg)
 
         switch (frame_type) {
         case DERP_FRAME_RECV_PACKET:
-            ESP_LOGI(TAG, "DERP RecvPacket src=%02x%02x%02x%02x len=%"PRIu32,
+            ESP_LOGD(TAG, "DERP RecvPacket src=%02x%02x%02x%02x len=%"PRIu32,
                      frame_buf[0], frame_buf[1], frame_buf[2], frame_buf[3],
                      payload_len - 32);
             if (payload_len > 32)
@@ -540,7 +540,7 @@ static void inject_wg_packet(const uint8_t *data, size_t len)
     ip_addr_copy_from_ip4(src_ip, src4);
     u16_t src_port = (u16_t)(s_home_node.region_id > 0 ? s_home_node.region_id : 1);
 
-    ESP_LOGI(TAG, "inject_wg: type=0x%02x len=%u to wg-netif",
+    ESP_LOGD(TAG, "inject_wg: type=0x%02x len=%u to wg-netif",
              data[0], (unsigned)len);
 
     /* Call WG receive directly from the DERP recv task. Thread-safety note:
@@ -650,7 +650,7 @@ esp_err_t ts_derp_send(const uint8_t dst_pub[32],
     esp_err_t err = derp_tx_enqueue(DERP_FRAME_SEND_PACKET, payload, payload_len);
     free(payload);
 
-    ESP_LOGI(TAG, "ts_derp_send dst=%02x%02x%02x%02x type=0x%02x len=%u enq=%d",
+    ESP_LOGD(TAG, "ts_derp_send dst=%02x%02x%02x%02x type=0x%02x len=%u enq=%d",
              dst_pub[0], dst_pub[1], dst_pub[2], dst_pub[3],
              pkt_len > 0 ? pkt[0] : 0, (unsigned)pkt_len, err);
 

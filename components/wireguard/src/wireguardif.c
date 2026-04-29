@@ -63,6 +63,7 @@ void handshake_destroy(struct wireguard_handshake *handshake);
  * The TAG string literal is concatenated directly into the format by callers. */
 #define log_i(fmt, ...) ESP_LOGI("wireguard", fmt, ##__VA_ARGS__)
 #define log_e(fmt, ...) ESP_LOGE("wireguard", fmt, ##__VA_ARGS__)
+#define log_w(fmt, ...) ESP_LOGW("wireguard", fmt, ##__VA_ARGS__)
 #define log_d(fmt, ...) ESP_LOGD("wireguard", fmt, ##__VA_ARGS__)
 #define log_v(fmt, ...) ESP_LOGV("wireguard", fmt, ##__VA_ARGS__)
 
@@ -244,11 +245,11 @@ static err_t wireguardif_output(struct netif *netif, struct pbuf *q, const ip4_a
 	struct wireguard_peer *peer = peer_lookup_by_allowed_ip(device, &ipaddr);
 	if (peer) {
 		err_t r = wireguardif_output_to_peer(netif, q, &ipaddr, peer);
-		log_i(TAG "wg_output to %08x len=%u r=%d",
+		log_d(TAG "wg_output to %08x len=%u r=%d",
 		      ip4addr->addr, q ? q->tot_len : 0, r);
 		return r;
 	} else {
-		log_i(TAG "wg_output NO_PEER for dst=%08x", ip4addr->addr);
+		log_w(TAG "wg_output NO_PEER for dst=%08x", ip4addr->addr);
 		return ERR_RTE;
 	}
 }
@@ -396,7 +397,7 @@ static void wireguardif_process_data_message(struct wireguard_device *device, st
 
 								// 5. If the plaintext packet has not been dropped, it is inserted into the receive queue of the wg0 interface.
 								if (dest_ok) {
-									log_i(TAG "rx_data ok proto=%d src=%08x dst=%08x len=%u",
+									log_d(TAG "rx_data ok proto=%d src=%08x dst=%08x len=%u",
 									      IPH_PROTO(iphdr),
 									      iphdr->src.addr, iphdr->dest.addr,
 									      pbuf->tot_len);
@@ -410,22 +411,22 @@ static void wireguardif_process_data_message(struct wireguard_device *device, st
 									// pbuf is owned by IP layer now
 									pbuf = NULL;
 								} else {
-									log_i(TAG "rx_data DROP src_not_allowed src=%08x",
+									log_w(TAG "rx_data DROP src_not_allowed src=%08x",
 									      iphdr->src.addr);
 								}
 							} else {
-								log_i(TAG "rx_data BAD_LEN header_len=%u tot=%u",
+								log_w(TAG "rx_data BAD_LEN header_len=%u tot=%u",
 								      header_len, pbuf->tot_len);
 							}
 						} else {
-							log_i(TAG "rx_data REPLAY_FAIL nonce=%llu",
+							log_d(TAG "rx_data REPLAY_FAIL nonce=%llu",
 							      (unsigned long long)nonce);
 						}
 					} else {
 						log_v(TAG "rx_data keepalive (empty)");
 					}
 				} else {
-					log_i(TAG "rx_data DECRYPT_FAIL nonce=%llu len=%u",
+					log_d(TAG "rx_data DECRYPT_FAIL nonce=%llu len=%u",
 					      (unsigned long long)nonce, (unsigned)src_len);
 				}
 
@@ -701,7 +702,7 @@ static err_t wireguard_start_handshake(struct netif *netif, struct wireguard_pee
 	pbuf = wireguardif_initiate_handshake(device, peer, &msg, &result);
 	if (pbuf) {
 		result = wireguardif_peer_output(netif, pbuf, peer);
-		log_i(TAG "start handshake %08x,%d - %d", peer->ip.u_addr.ip4.addr, peer->port, result);
+		log_d(TAG "start handshake %08x,%d - %d", peer->ip.u_addr.ip4.addr, peer->port, result);
 		pbuf_free(pbuf);
 		peer->send_handshake = false;
 		peer->last_initiation_tx = wireguard_sys_now();
@@ -858,7 +859,7 @@ err_t wireguardif_add_peer(struct netif *netif, struct wireguardif_peer *p, u8_t
 	}
 
 	uint32_t t2 = wireguard_sys_now();
-	log_i(TAG "Adding peer took %ums\r\n", (t2-t1));
+	log_d(TAG "Adding peer took %ums", (t2-t1));
 
 	if (peer_index) {
 		if (peer) {

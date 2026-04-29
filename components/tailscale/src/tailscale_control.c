@@ -594,7 +594,7 @@ static esp_err_t map_read_one(ts_ctrl_ctx_t *ctx,
     uint32_t msg_len = (uint32_t)siz[0] | ((uint32_t)siz[1] << 8) |
                        ((uint32_t)siz[2] << 16) | ((uint32_t)siz[3] << 24);
 
-    ESP_LOGI(TAG, "Map segment len=%"PRIu32, msg_len);
+    ESP_LOGD(TAG, "Map segment len=%"PRIu32, msg_len);
     if (msg_len == 0 || msg_len > 256 * 1024) {
         ESP_LOGE(TAG, "Map segment length invalid: %"PRIu32, msg_len);
         return ESP_ERR_INVALID_RESPONSE;
@@ -876,7 +876,8 @@ esp_err_t ts_ctrl_register(ts_ctrl_ctx_t *ctx)
     char *json_str = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!json_str) return ESP_ERR_NO_MEM;
-    ESP_LOGI(TAG, "RegisterRequest: %s", json_str);
+    /* Body contains the auth_key in plaintext — log only at DEBUG level. */
+    ESP_LOGD(TAG, "RegisterRequest: %s", json_str);
 
     static uint8_t resp_buf[CTRL_FRAME_BUF];
     size_t resp_len = 0;
@@ -887,7 +888,8 @@ esp_err_t ts_ctrl_register(ts_ctrl_ctx_t *ctx)
     if (err != ESP_OK) return err;
 
     resp_buf[resp_len] = '\0';
-    ESP_LOGI(TAG, "RegisterResponse (%u B): %.*s",
+    /* Response contains user/login profile data (PII) — DEBUG level only. */
+    ESP_LOGD(TAG, "RegisterResponse (%u B): %.*s",
              (unsigned)resp_len, (int)resp_len, (char *)resp_buf);
 
     cJSON *resp = cJSON_Parse((const char *)resp_buf);
@@ -1020,7 +1022,7 @@ esp_err_t ts_ctrl_map_request(ts_ctrl_ctx_t *ctx)
     err = map_read_one(ctx, &map_buf, &map_len);
     if (err != ESP_OK) return err;
 
-    ESP_LOGI(TAG, "MapResponse segment (%u B)", (unsigned)map_len);
+    ESP_LOGD(TAG, "MapResponse segment (%u B)", (unsigned)map_len);
     esp_err_t apply_err = ts_netmap_apply(map_buf, map_len);
     /* map_buf is owned by map_read_one's persistent buffer — do NOT free. */
 
