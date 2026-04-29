@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>serial_wifi_logger Web Flasher</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+         margin: 0; padding: 1.5rem; max-width: 760px; margin-inline: auto; line-height: 1.5; }
+  h1 { font-size: 1.4rem; margin: 0 0 .5rem; }
+  .sub { opacity: .7; font-size: .9rem; margin-bottom: 1.25rem; }
+  fieldset { border: 1px solid #888; border-radius: 6px; padding: .8rem 1rem; margin: 0 0 1rem; }
+  legend { padding: 0 .35rem; font-weight: 600; }
+  label { display: inline-flex; align-items: center; gap: .4rem; margin-right: 1rem; }
+  select, button { font: inherit; padding: .35rem .6rem; border-radius: 4px; }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .row { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+  #log { background: #111; color: #eee; padding: .8rem; border-radius: 6px;
+         min-height: 12rem; max-height: 24rem; overflow: auto; white-space: pre-wrap;
+         font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .85rem; }
+  progress { width: 100%; height: 1.1rem; }
+  .warn { color: #c33; }
+  .ok { color: #2a8; }
+  .small { font-size: .85rem; opacity: .8; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<h1>serial_wifi_logger Web Flasher</h1>
+<p class="sub">
+  ブラウザから ESP32-S3 にファームウェアを書き込みます / Flash ESP32-S3 firmware from your browser.
+  <br>Chrome / Edge など <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Serial_API#browser_compatibility" target="_blank" rel="noopener">WebSerial 対応ブラウザ</a>が必要です。
+</p>
+
+<fieldset>
+  <legend>1. デバイス接続 / Connect</legend>
+  <div class="row">
+    <button id="btnConnect">Connect</button>
+    <button id="btnDisconnect" disabled>Disconnect</button>
+    <span id="chipInfo" class="small"></span>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>2. リリース選択 / Select release</legend>
+  <div class="row">
+    <label>Version: <select id="selVersion"><option>loading…</option></select></label>
+    <button id="btnReload" title="Reload release list">↻</button>
+  </div>
+  <div id="assetInfo" class="small"></div>
+</fieldset>
+
+<fieldset>
+  <legend>3. 書き込み / Flash</legend>
+  <div class="row">
+    <label><input type="checkbox" id="chkErase"> Erase flash before write</label>
+    <button id="btnFlash" disabled>Flash</button>
+  </div>
+  <progress id="prog" value="0" max="100"></progress>
+</fieldset>
+
+<fieldset>
+  <legend>Log</legend>
+  <pre id="log"></pre>
+</fieldset>
+
+<p class="small">
+  Source: <a href="https://github.com/ciniml/serial_wifi_logger" target="_blank" rel="noopener">ciniml/serial_wifi_logger</a> ·
+  Bundled with <a href="https://github.com/espressif/esptool-js" target="_blank" rel="noopener">esptool-js</a>
+</p>
+
+<script type="module">
+import { ESPLoader, Transport } from './esptool.js';
+
+const REPO = 'ciniml/serial_wifi_logger';
+// `source: 'zip'` -> extract from the release ZIP.
+// `source: 'local'` -> fetch from the same origin as this page.
+const FLASH_PARTS = [
+  { name: 'bootloader.bin',         address: 0x0,    source: 'zip'   },
+  { name: 'partition-table.bin',    address: 0x8000, source: 'zip'   },
+  { name: 'ota_data_initial.bin',   address: 0xd000, source: 'local' },
+  { name: 'serial_wifi_logger.bin', address: 0x10000, source: 'zip'  },
+];
+
+const $ = (id) => document.getElementById(id);
+const logEl = $('log');
+const progEl = $('prog');
+const chipInfoEl = $('chipInfo');
+const assetInfoEl = $('assetInfo');
+
+function log(msg, cls) {
+  const line = document.createElement('span');
+  if (cls) line.className = cls;
+  line.textContent = msg + '\n';
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+const terminal = {
+  clean: () => { logEl.textContent = ''; },
+  writeLine: (s) => log(s),
+  write: (s) => { logEl.append(s); logEl.scrollTop = logEl.scrollHeight; },
+};
+
+if (!('serial' in navigator)) {
+  log('WebSerial API がこのブラウザではサポートされていません。', 'warn');
+  log('Please use Chrome / Edge / Opera on desktop.', 'warn');
+}
+if (typeof DecompressionStream === 'undefined') {
+  log('DecompressionStream API がサポートされていません (Chrome 103+ / Edge 103+ / Safari 16.4+ が必要)。', 'warn');
+}
+
+let transport = null;
+let loader = null;
+let releases = [];
+
+// --- ZIP extraction (deflate-raw via DecompressionStream, no deps) ---
+async function extractZip(buffer) {
+  const dv = new DataView(buffer);
+  const view = new Uint8Array(buffer);
+  const len = buffer.byteLength;
+
+  // Locate End of Central Directory record (signature 0x06054b50).
+  // Search the last 64KB + 22 bytes (max comment size).
+  let eocd = -1;
+  const minOffset = Math.max(0, len - (0xffff + 22));
+  for (let i = len - 22; i >= minOffset; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error('ZIP: EOCD not found');
+
+  const totalEntries = dv.getUint16(eocd + 10, true);
+  const cdOffset = dv.getUint32(eocd + 16, true);
+
+  const decoder = new TextDecoder('utf-8');
+  const entries = new Map();
+  let p = cdOffset;
+  for (let i = 0; i < totalEntries; i++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) throw new Error('ZIP: bad central dir entry');
+    const compMethod = dv.getUint16(p + 10, true);
+    const compSize   = dv.getUint32(p + 20, true);
+    const nameLen    = dv.getUint16(p + 28, true);
+    const extraLen   = dv.getUint16(p + 30, true);
+    const commentLen = dv.getUint16(p + 32, true);
+    const localOff   = dv.getUint32(p + 42, true);
+    const name = decoder.decode(view.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + nameLen + extraLen + commentLen;
+
+    if (name.endsWith('/')) continue; // directory entry
+    if (dv.getUint32(localOff, true) !== 0x04034b50) throw new Error('ZIP: bad local header');
+    const lNameLen  = dv.getUint16(localOff + 26, true);
+    const lExtraLen = dv.getUint16(localOff + 28, true);
+    const dataStart = localOff + 30 + lNameLen + lExtraLen;
+    const compData = view.subarray(dataStart, dataStart + compSize);
+
+    let outBuf;
+    if (compMethod === 0) {
+      outBuf = compData.slice().buffer;
+    } else if (compMethod === 8) {
+      const stream = new Blob([compData]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+      outBuf = await new Response(stream).arrayBuffer();
+    } else {
+      throw new Error(`ZIP: unsupported compression method ${compMethod} for ${name}`);
+    }
+    // Strip any leading directory in the path (release ZIP stores files at root, but be tolerant).
+    const baseName = name.split('/').pop();
+    entries.set(baseName, outBuf);
+  }
+  return entries;
+}
+
+// --- Release list ---
+async function loadReleases() {
+  const sel = $('selVersion');
+  sel.innerHTML = '<option>loading…</option>';
+  assetInfoEl.textContent = '';
+  try {
+    const r = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=20`);
+    if (!r.ok) throw new Error(`GitHub API ${r.status}`);
+    releases = await r.json();
+    if (!releases.length) {
+      sel.innerHTML = '<option value="">(no releases)</option>';
+      return;
+    }
+    sel.innerHTML = '';
+    for (const rel of releases) {
+      const o = document.createElement('option');
+      o.value = rel.tag_name;
+      o.textContent = rel.tag_name + (rel.prerelease ? ' (pre)' : '') + (rel.draft ? ' (draft)' : '');
+      sel.appendChild(o);
+    }
+    sel.dispatchEvent(new Event('change'));
+  } catch (e) {
+    log('Failed to fetch releases: ' + e.message, 'warn');
+    sel.innerHTML = '<option value="">(error)</option>';
+  }
+}
+
+function selectedRelease() {
+  const tag = $('selVersion').value;
+  return releases.find((r) => r.tag_name === tag);
+}
+
+function findZipAsset(rel) {
+  if (!rel) return null;
+  return rel.assets.find((a) => /^firmware-.*\.zip$/i.test(a.name)) ||
+         rel.assets.find((a) => a.name.toLowerCase().endsWith('.zip'));
+}
+
+function showAssetSummary() {
+  const rel = selectedRelease();
+  assetInfoEl.innerHTML = '';
+  if (!rel) return;
+  const zip = findZipAsset(rel);
+  const span = document.createElement('span');
+  if (zip) {
+    span.className = 'ok';
+    span.textContent = `Found: ${zip.name} (${(zip.size / 1024).toFixed(1)} KB)`;
+  } else {
+    span.className = 'warn';
+    span.textContent = 'No firmware ZIP asset found in this release.';
+  }
+  assetInfoEl.appendChild(span);
+}
+
+$('selVersion').addEventListener('change', showAssetSummary);
+$('btnReload').addEventListener('click', loadReleases);
+
+// --- Connect / Disconnect ---
+$('btnConnect').addEventListener('click', async () => {
+  try {
+    const port = await navigator.serial.requestPort();
+    transport = new Transport(port, true);
+    loader = new ESPLoader({
+      transport,
+      baudrate: 921600,
+      romBaudrate: 115200,
+      terminal,
+      debugLogging: false,
+    });
+    const chip = await loader.main();
+    chipInfoEl.textContent = `Detected: ${chip}`;
+    if (!String(chip).toLowerCase().includes('esp32-s3')) {
+      log(`警告: 検出されたチップ "${chip}" は ESP32-S3 ではありません。書き込みは動作しない可能性があります。`, 'warn');
+    }
+    $('btnConnect').disabled = true;
+    $('btnDisconnect').disabled = false;
+    $('btnFlash').disabled = false;
+  } catch (e) {
+    log('Connect failed: ' + (e?.message || e), 'warn');
+    transport = null; loader = null;
+  }
+});
+
+$('btnDisconnect').addEventListener('click', async () => {
+  try {
+    if (transport) await transport.disconnect();
+  } catch (e) { log('Disconnect error: ' + e.message, 'warn'); }
+  transport = null; loader = null;
+  chipInfoEl.textContent = '';
+  $('btnConnect').disabled = false;
+  $('btnDisconnect').disabled = true;
+  $('btnFlash').disabled = true;
+});
+
+// --- Flash ---
+function abToBinaryString(ab) {
+  const u8 = ab instanceof Uint8Array ? ab : new Uint8Array(ab);
+  let s = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < u8.length; i += chunk) {
+    s += String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + chunk, u8.length)));
+  }
+  return s;
+}
+
+$('btnFlash').addEventListener('click', async () => {
+  if (!loader) { log('Not connected.', 'warn'); return; }
+  const rel = selectedRelease();
+  if (!rel) { log('No release selected.', 'warn'); return; }
+  const zipAsset = findZipAsset(rel);
+  if (!zipAsset) { log('No ZIP asset in this release.', 'warn'); return; }
+
+  $('btnFlash').disabled = true;
+  $('btnDisconnect').disabled = true;
+  progEl.value = 0;
+
+  let entries;
+  try {
+    log(`Downloading ${zipAsset.name} (${zipAsset.size} bytes)…`);
+    const r = await fetch(zipAsset.browser_download_url);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const zipBuf = await r.arrayBuffer();
+    log('Extracting ZIP…');
+    entries = await extractZip(zipBuf);
+    log('Extracted: ' + [...entries.keys()].join(', '));
+  } catch (e) {
+    log('ZIP download/extract failed: ' + e.message, 'warn');
+    $('btnFlash').disabled = false;
+    $('btnDisconnect').disabled = false;
+    return;
+  }
+
+  const fileArray = [];
+  for (const part of FLASH_PARTS) {
+    let buf;
+    try {
+      if (part.source === 'local') {
+        const lr = await fetch(`./${part.name}`);
+        if (!lr.ok) throw new Error(`HTTP ${lr.status}`);
+        buf = await lr.arrayBuffer();
+      } else {
+        buf = entries.get(part.name);
+        if (!buf) throw new Error('not found in ZIP');
+      }
+    } catch (e) {
+      log(`Failed to load ${part.name} (${part.source}): ${e.message}`, 'warn');
+      $('btnFlash').disabled = false;
+      $('btnDisconnect').disabled = false;
+      return;
+    }
+    fileArray.push({ data: abToBinaryString(buf), address: part.address });
+  }
+
+  try {
+    const totalSize = fileArray.reduce((s, f) => s + f.data.length, 0);
+    let curIdx = -1;
+    let curBase = 0;
+    let prevDone = 0;
+    await loader.writeFlash({
+      fileArray,
+      flashSize: 'keep',
+      flashMode: 'keep',
+      flashFreq: 'keep',
+      eraseAll: $('chkErase').checked,
+      compress: true,
+      reportProgress: (fileIndex, written, total) => {
+        if (fileIndex !== curIdx) {
+          curBase = prevDone;
+          curIdx = fileIndex;
+        }
+        const done = curBase + written;
+        prevDone = curBase + total;
+        progEl.value = Math.min(100, (done / totalSize) * 100);
+      },
+    });
+    progEl.value = 100;
+    log('Flash complete. Resetting…', 'ok');
+    await loader.after();
+    log('Done.', 'ok');
+  } catch (e) {
+    log('Flash failed: ' + (e?.message || e), 'warn');
+  } finally {
+    $('btnFlash').disabled = false;
+    $('btnDisconnect').disabled = false;
+  }
+});
+
+loadReleases();
+</script>
+</body>
+</html>

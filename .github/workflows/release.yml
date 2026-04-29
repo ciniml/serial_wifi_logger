@@ -121,6 +121,9 @@ jobs:
 
             ## Installation
 
+            ### Web Flasher (Browser, Chrome/Edge)
+            Open https://ciniml.github.io/serial_wifi_logger/ , connect the device, and pick this release.
+
             ### Initial Flash (First Time)
             1. Download `firmware-${{ steps.version.outputs.version }}.zip`
             2. Extract the ZIP file

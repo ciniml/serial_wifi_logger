@@ -92,6 +92,10 @@ OTA対応のデュアルパーティション構成:
 
 GitHubのReleasesページから最新のファームウェアZIPファイルをダウンロードして使用できます。
 
+**方法0: ブラウザ（WebSerial）で書き込み**
+
+ChromeやEdgeなどWebSerial対応ブラウザから [Web Flasher](https://ciniml.github.io/serial_wifi_logger/) を開き、デバイスをUSB接続して書き込みできます。esptool.pyのインストールやコマンド実行は不要です。
+
 **方法1: 自動フラッシュスクリプト（推奨）**
 
 GitHubから自動的にファームウェアをダウンロードしてフラッシュするスクリプトを用意しています。
