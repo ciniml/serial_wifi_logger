@@ -1,0 +1,75 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - '.github/workflows/pages.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage docs/ into _site/
+        run: |
+          mkdir -p _site
+          cp -a docs/. _site/
+
+      - name: Stage release firmware ZIPs into _site/firmware/<tag>/
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p _site/firmware
+          tags_json=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+                        --json tagName,isDraft,isPrerelease)
+          mapfile -t tags < <(echo "$tags_json" | jq -r '.[] | select(.isDraft|not) | .tagName')
+
+          : > /tmp/staged.tsv
+          for tag in "${tags[@]}"; do
+            asset=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+                    --jq '.assets[] | select(.name|test("^firmware-.*\\.zip$")) | .name' \
+                    | head -n1 || true)
+            if [ -z "$asset" ]; then
+              echo "[skip] $tag: no firmware ZIP asset"
+              continue
+            fi
+            dest="_site/firmware/$tag"
+            mkdir -p "$dest"
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p "$asset" -D "$dest"
+            echo -e "$tag\t$asset" >> /tmp/staged.tsv
+            echo "[ok] $tag -> $dest/$asset"
+          done
+
+          # versions.json: ordered list of {tag, zip} for tags whose ZIP was staged.
+          jq -Rn '[inputs | split("\t") | {tag: .[0], zip: .[1]}]' \
+            < /tmp/staged.tsv > _site/versions.json
+          echo "--- versions.json ---"
+          cat _site/versions.json
+          echo "--- _site/firmware ---"
+          find _site/firmware -maxdepth 2 -type f | sort
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -37,6 +37,14 @@
 <fieldset>
   <legend>1. デバイス接続 / Connect</legend>
   <div class="row">
+    <label>Baud:
+      <select id="selBaud">
+        <option value="115200">115200</option>
+        <option value="460800">460800</option>
+        <option value="921600">921600</option>
+        <option value="2000000" selected>2000000</option>
+      </select>
+    </label>
     <button id="btnConnect">Connect</button>
     <button id="btnDisconnect" disabled>Disconnect</button>
     <span id="chipInfo" class="small"></span>
@@ -74,7 +82,6 @@
 <script type="module">
 import { ESPLoader, Transport } from './esptool.js';
 
-const REPO = 'ciniml/serial_wifi_logger';
 // `source: 'zip'` -> extract from the release ZIP.
 // `source: 'local'` -> fetch from the same origin as this page.
 const FLASH_PARTS = [
@@ -170,14 +177,14 @@ async function extractZip(buffer) {
   return entries;
 }
 
-// --- Release list ---
+// --- Release list (from same-origin versions.json staged by CI) ---
 async function loadReleases() {
   const sel = $('selVersion');
   sel.innerHTML = '<option>loading…</option>';
   assetInfoEl.textContent = '';
   try {
-    const r = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=20`);
-    if (!r.ok) throw new Error(`GitHub API ${r.status}`);
+    const r = await fetch('./versions.json', { cache: 'no-cache' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     releases = await r.json();
     if (!releases.length) {
       sel.innerHTML = '<option value="">(no releases)</option>';
@@ -186,41 +193,33 @@ async function loadReleases() {
     sel.innerHTML = '';
     for (const rel of releases) {
       const o = document.createElement('option');
-      o.value = rel.tag_name;
-      o.textContent = rel.tag_name + (rel.prerelease ? ' (pre)' : '') + (rel.draft ? ' (draft)' : '');
+      o.value = rel.tag;
+      o.textContent = rel.tag;
       sel.appendChild(o);
     }
     sel.dispatchEvent(new Event('change'));
   } catch (e) {
-    log('Failed to fetch releases: ' + e.message, 'warn');
+    log('Failed to fetch versions.json: ' + e.message, 'warn');
     sel.innerHTML = '<option value="">(error)</option>';
   }
 }
 
 function selectedRelease() {
   const tag = $('selVersion').value;
-  return releases.find((r) => r.tag_name === tag);
+  return releases.find((r) => r.tag === tag);
 }
 
-function findZipAsset(rel) {
-  if (!rel) return null;
-  return rel.assets.find((a) => /^firmware-.*\.zip$/i.test(a.name)) ||
-         rel.assets.find((a) => a.name.toLowerCase().endsWith('.zip'));
+function zipUrlFor(rel) {
+  return rel ? `./firmware/${rel.tag}/${rel.zip}` : null;
 }
 
 function showAssetSummary() {
   const rel = selectedRelease();
   assetInfoEl.innerHTML = '';
   if (!rel) return;
-  const zip = findZipAsset(rel);
   const span = document.createElement('span');
-  if (zip) {
-    span.className = 'ok';
-    span.textContent = `Found: ${zip.name} (${(zip.size / 1024).toFixed(1)} KB)`;
-  } else {
-    span.className = 'warn';
-    span.textContent = 'No firmware ZIP asset found in this release.';
-  }
+  span.className = 'ok';
+  span.textContent = `ZIP: ${rel.zip}`;
   assetInfoEl.appendChild(span);
 }
 
@@ -231,10 +230,11 @@ $('btnReload').addEventListener('click', loadReleases);
 $('btnConnect').addEventListener('click', async () => {
   try {
     const port = await navigator.serial.requestPort();
-    transport = new Transport(port, true);
+    transport = new Transport(port, false);
+    const baud = parseInt($('selBaud').value, 10) || 460800;
     loader = new ESPLoader({
       transport,
-      baudrate: 921600,
+      baudrate: baud,
       romBaudrate: 115200,
       terminal,
       debugLogging: false,
@@ -265,22 +265,11 @@ $('btnDisconnect').addEventListener('click', async () => {
 });
 
 // --- Flash ---
-function abToBinaryString(ab) {
-  const u8 = ab instanceof Uint8Array ? ab : new Uint8Array(ab);
-  let s = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < u8.length; i += chunk) {
-    s += String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + chunk, u8.length)));
-  }
-  return s;
-}
-
 $('btnFlash').addEventListener('click', async () => {
   if (!loader) { log('Not connected.', 'warn'); return; }
   const rel = selectedRelease();
   if (!rel) { log('No release selected.', 'warn'); return; }
-  const zipAsset = findZipAsset(rel);
-  if (!zipAsset) { log('No ZIP asset in this release.', 'warn'); return; }
+  const zipUrl = zipUrlFor(rel);
 
   $('btnFlash').disabled = true;
   $('btnDisconnect').disabled = true;
@@ -288,11 +277,11 @@ $('btnFlash').addEventListener('click', async () => {
 
   let entries;
   try {
-    log(`Downloading ${zipAsset.name} (${zipAsset.size} bytes)…`);
-    const r = await fetch(zipAsset.browser_download_url);
+    log(`Downloading ${rel.zip}…`);
+    const r = await fetch(zipUrl);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const zipBuf = await r.arrayBuffer();
-    log('Extracting ZIP…');
+    log(`Extracting ZIP (${zipBuf.byteLength} bytes)…`);
     entries = await extractZip(zipBuf);
     log('Extracted: ' + [...entries.keys()].join(', '));
   } catch (e) {
@@ -320,7 +309,7 @@ $('btnFlash').addEventListener('click', async () => {
       $('btnDisconnect').disabled = false;
       return;
     }
-    fileArray.push({ data: abToBinaryString(buf), address: part.address });
+    fileArray.push({ data: new Uint8Array(buf), address: part.address });
   }
 
   try {
