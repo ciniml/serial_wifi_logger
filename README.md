@@ -45,6 +45,15 @@ Serial WiFi Loggerは、ESP32-S3のUSB OTG機能を使用してUSBシリアル�
 - **自動ロールバック**: 新ファームウェアクラッシュ時に自動復旧
 - **mDNS統合**: `http://serial-XXXXXX.local/` でアクセス可能
 - **進捗表示**: リアルタイムアップロード進捗バー
+- **タブ構成 Web UI**: Status / Tailscale / WireGuard / OTA の 4 タブ
+
+### 7. VPN 連携 (Tailscale / WireGuard)
+- **Tailscale クライアント**: 公式コントロールサーバ (`login.tailscale.com`) に独自 ts2021 実装で参加。auth_key 認証、DERP リレー、`100.x.y.z/32` の Tailscale IP 自動割当
+- **WireGuard マニュアルモード**: 手動で peer 公開鍵 / endpoint / 鍵を設定する標準的な WireGuard クライアント。Tailscale が無効なときに利用可能
+- **Web UI から設定**: ブラウザの「Tailscale」「WireGuard」タブから auth_key・peer 設定・有効/無効切替が可能
+- **NVS 永続化**: 一度設定すれば再起動後も自動接続。ファームウェア更新で消えない
+- **排他動作**: Tailscale と WireGuard マニュアルは同時に使えず、一方が起動すると他方は停止
+- **REST API**: `GET/PUT /api/tailscale`、`GET/PUT /api/wireguard`、`GET /api/network/status`
 
 ## 必要なハードウェア
 
@@ -69,7 +78,7 @@ OTA対応のデュアルパーティション構成:
 
 | パーティション | タイプ | サブタイプ | オフセット | サイズ | 用途 |
 |--------------|--------|-----------|-----------|--------|------|
-| nvs | data | nvs | 0x9000 | 16KB | WiFi設定等の不揮発性ストレージ |
+| nvs | data | nvs | 0x9000 | 16KB | WiFi / Tailscale / WireGuard 設定等の不揮発性ストレージ |
 | otadata | data | ota | 0xd000 | 8KB | OTA起動パーティション管理 |
 | phy_init | data | phy | 0xf000 | 4KB | RF校正データ |
 | ota_0 | app | ota_0 | 0x10000 | 960KB | プライマリアプリケーション |
@@ -593,6 +602,177 @@ python3 tools/loopback_test.py 192.168.2.133 --baud 115200 --count 256
 | `--baud`  | 115200    | ボーレート |
 | `--count` | 4         | 256 バイトパターンの繰り返し回数 (合計バイト数 = count × 256) |
 
+### 6. VPN (Tailscale / WireGuard) の設定
+
+ESP32 を Tailscale ネットワークに参加させる、または手動 WireGuard 設定で
+リモート接続できるようにする機能です。両方の仕様は **同時に有効化できません**
+(同じ WireGuard データプレーンを共有するため)。設定は NVS に保存され、
+再起動後も維持されます。
+
+#### コンパイル時に組み込む
+
+Kconfig で対象機能を有効化してビルドします (リリースバイナリは双方有効です)。
+
+```bash
+idf.py menuconfig
+```
+
+- `Tailscale` → `Enable Tailscale client` (`y`) — 有効化すると自動的に
+  WireGuard データプレーンも内蔵されます
+- `WireGuard` → `Enable WireGuard VPN` (`y`) — Tailscale を使わずマニュアル
+  モードで使う場合のみ単独で有効化
+
+#### Web UI から設定 (推奨)
+
+1. デバイスの Web UI にアクセス: `http://serial-XXXXXX.local/`
+2. 上部タブから **Tailscale** または **WireGuard** を選択
+3. フォームに値を入力 → **Save & Apply** をクリック
+4. 数秒以内に新しい設定で再接続。Status タブで状態を確認
+
+##### Tailscale タブの項目
+
+| フィールド | 内容 | 例 |
+|---|---|---|
+| Enable Tailscale | チェックで有効化、外せば停止 | (チェック) |
+| Hostname | tailnet 上での名前 | `esp32-serial` |
+| Control Server | コントロールサーバ URL (通常変更不要) | `login.tailscale.com` |
+| Auth Key | tailnet 管理画面で発行した pre-auth key | `tskey-auth-...` |
+
+`Auth Key` は保存後 GET API では返さず、先頭+末尾だけのヒントが表示されます。
+更新したいときだけ入力し、空欄なら既存値が維持されます。
+
+##### WireGuard タブの項目
+
+| フィールド | 内容 |
+|---|---|
+| Enable WireGuard | チェックで有効化 (Tailscale が動いていれば自動停止) |
+| Local IP / Netmask / Gateway | VPN 内側の自分の IP 設定 |
+| Private Key (base64) | 自分の WireGuard 秘密鍵 (空欄なら既存値維持) |
+| Peer Public Key | 接続先サーバの公開鍵 (base64) |
+| Peer Endpoint / Port | 接続先のホスト名 + UDP ポート |
+| Listen Port | ローカル UDP ポート (`0` で動的) |
+| Keepalive (s) | NAT 越え用の persistent keepalive (`25` 推奨, `0` で無効) |
+| Set as default route | チェックで全通信を VPN 経由に |
+| NTP Server | TAI64N タイムスタンプ用の NTP サーバ |
+| Pre-Shared Key | 64 桁の hex 文字列 (任意, 空欄なら未設定) |
+
+#### REST API から設定 (curl など)
+
+Web UI が呼び出している同じ API を直接利用できます。
+
+##### GET /api/network/status
+
+WiFi / Tailscale / WireGuard の現在状態を返します。
+
+```bash
+curl -s http://serial-XXXXXX.local/api/network/status | jq
+```
+
+```json
+{
+  "wifi":      {"connected": true, "ip": "192.168.1.100"},
+  "tailscale": {"enabled": true,  "running": true,  "ip": "100.x.y.z"},
+  "wireguard": {"enabled": false, "running": false}
+}
+```
+
+##### GET /api/tailscale / PUT /api/tailscale
+
+```bash
+# 現在の設定を確認 (auth_key は hint のみ)
+curl -s http://serial-XXXXXX.local/api/tailscale | jq
+
+# auth_key とホスト名を更新して有効化
+curl -X PUT http://serial-XXXXXX.local/api/tailscale \
+     -H 'Content-Type: application/json' \
+     -d '{"enabled":true,
+          "auth_key":"tskey-auth-XXXXXXXXX",
+          "hostname":"esp32-serial"}'
+
+# 一時的に無効化
+curl -X PUT http://serial-XXXXXX.local/api/tailscale \
+     -H 'Content-Type: application/json' \
+     -d '{"enabled":false}'
+```
+
+レスポンスは `{"ok":true,"requested_enabled":true}` を即座に返し、
+実際の停止/起動はバックグラウンドで実行されます。完了は
+`/api/network/status` の `running` フィールドをポーリングして確認します。
+
+##### GET /api/wireguard / PUT /api/wireguard
+
+```bash
+# 設定を確認
+curl -s http://serial-XXXXXX.local/api/wireguard | jq
+
+# WireGuard を構成して有効化
+curl -X PUT http://serial-XXXXXX.local/api/wireguard \
+     -H 'Content-Type: application/json' \
+     -d '{
+       "enabled": true,
+       "local_ip": "10.0.0.2",
+       "local_netmask": "255.255.255.0",
+       "private_key": "<base64-private-key>",
+       "peer_pub_key": "<base64-peer-public-key>",
+       "peer_endpoint": "vpn.example.com",
+       "peer_port": 51820,
+       "listen_port": 51820,
+       "keepalive": 25
+     }'
+```
+
+`private_key` と `preshared_key` は GET では返らず、保存済みかどうかは
+`private_key_set` / `preshared_key_set` (bool) で判別します。
+
+#### 接続確認
+
+##### Tailscale
+
+```bash
+# 別ノードから ping (DERP リレー経由でも疎通)
+ping <esp32 の Tailscale IP>
+
+# tailscale ping でパスの種類を確認
+tailscale ping <esp32 の Tailscale IP>
+
+# Web UI に Tailscale IP 経由で接続できることを確認
+curl http://<esp32 の Tailscale IP>/api/info
+```
+
+##### WireGuard
+
+```bash
+# WG 内側の IP に対して疎通
+ping <esp32 の WireGuard IP>
+
+# サーバ側で peer の handshake 状態を確認
+sudo wg show
+```
+
+#### 動作上の注意
+
+- **応答経路の自己切断**: Web UI / curl で **Tailscale 経由** で接続したまま
+  Tailscale を無効化すると、同じ呼び出しの応答が返り切る前に経路が落ちる
+  ことがあります。本実装は約 500 ms の grace period で応答 flush を待ち、
+  ほとんどの場合問題ありません。LAN IP 経由のアクセスならこの問題はありません。
+- **NVS 永続化**: `enabled` フラグおよび各フィールドはすぐ NVS に書かれますが、
+  実機の電源を切る前に短時間 (数百 ms) 待ってから電源断すると安全です。
+- **Tailscale 自動 IP 割当**: auth_key 単位で割り当てられる Tailscale IP は
+  最初の登録で確定します。ホスト名の変更だけで IP は変わりません。
+- **TLS と heap**: Tailscale の制御チャネル + DERP リレーで 2 本の TLS
+  接続を維持します。`MBEDTLS_DYNAMIC_BUFFER` が有効化されているため
+  通常はメモリ不足になりませんが、別の重い HTTPS 通信を同時に行うと
+  ヒープがひっ迫する可能性があります。
+
+#### トラブルシューティング
+
+問題 | 確認事項
+--- | ---
+Tailscale で IP が割り当てられない | シリアルログで `RegisterResponse`、`MachineAuthorized:true` を確認。auth_key の有効期限切れ・使用済みが多い
+Tailscale 上の他ノードから疎通しない | 相手側で `tailscale status` に `esp32-serial` が出ているか確認。NAT 越えで direct path が張れない場合は DERP 経由に自動 fallback (高レイテンシ)
+WireGuard ハンドシェイクが完了しない | サーバ側 `wg show` の `latest handshake` を確認。keys が間違っている / endpoint 到達不能 / 時刻ずれ (NTP 未同期)
+Web UI でブラウザから複数の応答が遅い | `httpd_accept_conn: error in accept (23)` がログに出ていないか確認。`CONFIG_LWIP_MAX_SOCKETS` の引き上げが必要 (デフォルト 16)
+
 ## mDNS TXTレコード
 
 以下の情報がmDNS TXTレコードとして公開されます:
@@ -661,6 +841,29 @@ python3 tools/loopback_test.py 192.168.2.133 --baud 115200 --count 256
 - **Maximum Firmware Size**: 最大ファームウェアサイズ（デフォルト: 983040バイト = 960KB）
 - **Enable Automatic Rollback**: 自動ロールバック有効化（デフォルト: 有効）
 
+### Tailscale 設定
+
+`idf.py menuconfig` → `Tailscale`
+
+- **Enable Tailscale client**: Tailscale クライアントを組み込む（デフォルト: 無効）
+- **Pre-auth key**: コンパイル時のデフォルト auth_key (空でも可。Web UI からの設定が優先)
+- **Hostname**: tailnet 上のデフォルトホスト名（デフォルト: `esp32-serial`）
+- **Control server**: Tailscale コントロールサーバ URL（デフォルト: `login.tailscale.com`）
+- **Maximum number of Tailscale peers**: 同時接続 peer 数の上限（デフォルト: 8）
+
+設定は実行時に Web UI / REST API で変更でき、NVS 名前空間 `tailscale` に保存されます。
+
+### WireGuard 設定
+
+`idf.py menuconfig` → `WireGuard`
+
+- **Enable WireGuard VPN**: WireGuard データプレーンを組み込む（Tailscale が
+  有効なときは自動で `y` になります）
+- **Maximum number of WireGuard peers**: peer 数の上限（デフォルト: 1, Tailscale 用は 16）
+- マニュアル接続用のデフォルト値 (`Local IP`, `Peer Public Key`, `Peer Endpoint` など)
+
+実行時設定は NVS 名前空間 `wireguard` に保存され、Web UI / REST API から変更可能です。
+
 ### WiFi 再試行回数の変更
 
 `idf.py menuconfig` → `Network Provisioning Configuration` → `Maximum WiFi connection retry`
@@ -711,6 +914,41 @@ python3 tools/loopback_test.py 192.168.2.133 --baud 115200 --count 256
 2. デバイスがWiFiに接続されていることを確認
 3. mDNSクライアントツールが正しくインストールされていることを確認
 4. シリアルモニタでmDNS初期化ログを確認
+
+### Tailscale が tailnet に登録されない
+
+1. シリアルログで `RegisterRequest` 送信および `RegisterResponse` 受信を確認
+   ```bash
+   idf.py -p PORT monitor | grep ts_ctrl
+   ```
+2. `Error` フィールドや `AuthURL` が空でないか確認 (空でなければ auth_key 期限切れ)
+3. Web UI の **Tailscale** タブで auth_key が "set" になっているか、ヒントの末尾が
+   想定どおりか確認
+4. tailnet 管理コンソールで該当ホストが表示されているか
+5. `MachineAuthorized:true` が返らない場合は ACL / Device Approval を確認
+
+### Tailscale 上の他ノードから疎通しない
+
+1. デバイス側の Tailscale IP を確認
+   ```bash
+   curl http://serial-XXXXXX.local/api/network/status | jq .tailscale.ip
+   ```
+2. `tailscale ping --until-direct=false <ip>` で DERP 経路の到達性を確認
+3. ICMP / TCP / HTTP の順で疎通テスト
+   ```bash
+   ping <ts-ip>
+   curl http://<ts-ip>/api/info
+   ```
+4. シリアルログで `DERP connected` と `Added peer` を確認
+
+### WireGuard ハンドシェイクが成立しない
+
+1. サーバ側で `sudo wg show` の `latest handshake` を確認
+2. デバイス側の `Listen Port` がサーバから到達可能なポートになっているか
+   (NAT/ファイアウォール越しの場合は `Keepalive` を 25 などに設定)
+3. NTP 同期が完了しているか (TAI64N タイムスタンプ用)
+4. Web UI で `private_key_set: true`, `peer_pub_key`, `peer_endpoint` が
+   正しく入っているか確認
 
 ### RFC2217 で接続できない
 
