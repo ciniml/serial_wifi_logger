@@ -5,6 +5,9 @@ sdkconfig.old
 sdkconfig
 # Per-developer ESP-IDF defaults overlay (e.g. CONFIG_TAILSCALE_AUTH_KEY)
 sdkconfig.local
+# Generated when running `make build-docker`
+sdkconfig.docker
+build-docker/
 
 # Firmware binaries
 firmware.bin
