@@ -40,6 +40,17 @@ CONFIG_LWIP_PPP_SUPPORT=y
 # Tailscale tailnets can have many peers; we accept the SRAM cost (~800 B each).
 CONFIG_WIREGUARD_MAX_PEERS=16
 
+# WG decryption + lwIP TCP processing happens off-thread when DERP packets
+# arrive (the DERP recv task calls ip_input directly). Default 3 KiB stack
+# overflows; bump to 8 KiB.
+CONFIG_LWIP_TCPIP_TASK_STACK_SIZE=8192
+
+# Core locking lets non-tcpip threads (specifically the DERP recv task) call
+# into ip_input/tcp_input safely under LOCK_TCPIP_CORE. Without this lock,
+# concurrent TCP state-machine access from app threads would corrupt pcbs.
+CONFIG_LWIP_TCPIP_CORE_LOCKING=y
+
+
 # TLS CA store: needed for HTTPS connections to login.tailscale.com and DERP servers
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y

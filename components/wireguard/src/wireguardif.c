@@ -45,6 +45,7 @@
 #include "lwip/mem.h"
 #include "lwip/sys.h"
 #include "lwip/timeouts.h"
+#include "lwip/tcpip.h"   /* LOCK_TCPIP_CORE — only used when CONFIG_LWIP_TCPIP_CORE_LOCKING=y */
 
 #include "wireguard.h"
 #include "crypto.h"
@@ -242,8 +243,12 @@ static err_t wireguardif_output(struct netif *netif, struct pbuf *q, const ip4_a
 	ip_addr_copy_from_ip4(ipaddr, *ip4addr);
 	struct wireguard_peer *peer = peer_lookup_by_allowed_ip(device, &ipaddr);
 	if (peer) {
-		return wireguardif_output_to_peer(netif, q, &ipaddr, peer);
+		err_t r = wireguardif_output_to_peer(netif, q, &ipaddr, peer);
+		log_i(TAG "wg_output to %08x len=%u r=%d",
+		      ip4addr->addr, q ? q->tot_len : 0, r);
+		return r;
 	} else {
+		log_i(TAG "wg_output NO_PEER for dst=%08x", ip4addr->addr);
 		return ERR_RTE;
 	}
 }
@@ -391,20 +396,37 @@ static void wireguardif_process_data_message(struct wireguard_device *device, st
 
 								// 5. If the plaintext packet has not been dropped, it is inserted into the receive queue of the wg0 interface.
 								if (dest_ok) {
-									// Send packet to be process by LWIP
+									log_i(TAG "rx_data ok proto=%d src=%08x dst=%08x len=%u",
+									      IPH_PROTO(iphdr),
+									      iphdr->src.addr, iphdr->dest.addr,
+									      pbuf->tot_len);
+									// Send packet to be processed by LWIP. When CORE_LOCKING
+									// is enabled the caller of network_rx may not be on the
+									// tcpip thread, so we acquire the core lock briefly to
+									// keep TCP state machine accesses safe.
+									LOCK_TCPIP_CORE();
 									ip_input(pbuf, device->netif);
+									UNLOCK_TCPIP_CORE();
 									// pbuf is owned by IP layer now
 									pbuf = NULL;
+								} else {
+									log_i(TAG "rx_data DROP src_not_allowed src=%08x",
+									      iphdr->src.addr);
 								}
 							} else {
-								// IP header is corrupt or lied about packet size
+								log_i(TAG "rx_data BAD_LEN header_len=%u tot=%u",
+								      header_len, pbuf->tot_len);
 							}
 						} else {
-							// This is a duplicate packet / replayed / too far out of order
+							log_i(TAG "rx_data REPLAY_FAIL nonce=%llu",
+							      (unsigned long long)nonce);
 						}
 					} else {
-						// This was a keep-alive packet
+						log_v(TAG "rx_data keepalive (empty)");
 					}
+				} else {
+					log_i(TAG "rx_data DECRYPT_FAIL nonce=%llu len=%u",
+					      (unsigned long long)nonce, (unsigned)src_len);
 				}
 
 				if (pbuf) {

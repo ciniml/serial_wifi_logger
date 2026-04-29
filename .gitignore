@@ -13,3 +13,6 @@ release/
 
 # WireGuard test keys (contain private keys — never commit)
 script/wireguard/keys/
+
+# Per-developer Makefile overrides (e.g. PROBE_HOST = your tailnet IP)
+Makefile.local

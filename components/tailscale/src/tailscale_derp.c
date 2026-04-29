@@ -17,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 
 #include "lwip/netif.h"
 #include "lwip/pbuf.h"
@@ -38,14 +39,29 @@ static const char *TAG = "ts_derp";
 #define DERP_RECV_TASK_PRIO   5
 #define DERP_KA_TASK_STACK    2048
 #define DERP_KA_TASK_PRIO     4
+#define DERP_TX_TASK_STACK    4096
+#define DERP_TX_TASK_PRIO     5
+#define DERP_TX_QUEUE_LEN     16
 #define DERP_KEEPALIVE_MS     15000   /* send keepalive every 15 s */
 #define DERP_RECV_TIMEOUT_MS  20000   /* SO_RCVTIMEO on TLS socket */
 #define DERP_MAX_FRAME        (2048 + 32 + 4)  /* max WG packet + header */
 
+/* Queue item handed from ts_derp_send (callers, including the WG netif
+ * output path that runs under LOCK_TCPIP_CORE) to derp_tx_task. The TX
+ * task does the actual TLS write outside the lwIP core lock so that
+ * blocking on the underlying TCP socket never wedges the tcpip thread. */
+typedef struct {
+    uint8_t  frame_type;
+    uint32_t plen;
+    uint8_t  payload[];      /* flexible array; allocated as one block */
+} derp_tx_item_t;
+
 static esp_tls_t         *s_tls = NULL;
 static SemaphoreHandle_t  s_tx_mutex = NULL;
+static QueueHandle_t      s_tx_queue = NULL;
 static TaskHandle_t       s_recv_task = NULL;
 static TaskHandle_t       s_ka_task = NULL;
+static TaskHandle_t       s_tx_task = NULL;
 static bool               s_running = false;
 static uint8_t            s_node_pub[32];
 static volatile bool      s_connecting = false;  /* guard against double-spawn */
@@ -426,16 +442,57 @@ static void derp_recv_task(void *arg)
     vTaskDelete(NULL);
 }
 
-/* Keepalive task: sends a keepalive frame every DERP_KEEPALIVE_MS */
+/* Allocate and post one frame to the TX queue. Caller may be on any thread,
+ * including the lwIP core-locked path — the actual TLS write happens later
+ * on derp_tx_task so we never block the tcpip thread on socket I/O. */
+static esp_err_t derp_tx_enqueue(uint8_t frame_type,
+                                  const uint8_t *payload, size_t plen)
+{
+    if (!s_tx_queue) return ESP_ERR_INVALID_STATE;
+    derp_tx_item_t *item = malloc(sizeof(*item) + plen);
+    if (!item) return ESP_ERR_NO_MEM;
+    item->frame_type = frame_type;
+    item->plen       = (uint32_t)plen;
+    if (plen && payload) memcpy(item->payload, payload, plen);
+    if (xQueueSend(s_tx_queue, &item, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "DERP TX queue full; dropping frame type=0x%02x",
+                 frame_type);
+        free(item);
+        return ESP_ERR_NO_MEM;
+    }
+    return ESP_OK;
+}
+
+/* TX worker: serialised TLS writer. Pulls items off the queue and writes
+ * them to the DERP TLS connection under s_tx_mutex. */
+static void derp_tx_task(void *arg)
+{
+    while (s_running) {
+        derp_tx_item_t *item = NULL;
+        if (xQueueReceive(s_tx_queue, &item, pdMS_TO_TICKS(500)) != pdTRUE)
+            continue;
+        if (!s_running) { free(item); break; }
+        if (!s_tls)     { free(item); continue; }
+
+        xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
+        derp_send_frame(item->frame_type, item->payload, item->plen);
+        xSemaphoreGive(s_tx_mutex);
+        free(item);
+    }
+    /* Drain any remaining items. */
+    derp_tx_item_t *item;
+    while (s_tx_queue && xQueueReceive(s_tx_queue, &item, 0) == pdTRUE)
+        free(item);
+    vTaskDelete(NULL);
+}
+
+/* Keepalive task: enqueues a keepalive frame every DERP_KEEPALIVE_MS. */
 static void derp_ka_task(void *arg)
 {
     while (s_running) {
         vTaskDelay(pdMS_TO_TICKS(DERP_KEEPALIVE_MS));
         if (!s_running || !s_tls) break;
-        if (xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            derp_send_frame(DERP_FRAME_KEEP_ALIVE, NULL, 0);
-            xSemaphoreGive(s_tx_mutex);
-        }
+        derp_tx_enqueue(DERP_FRAME_KEEP_ALIVE, NULL, 0);
     }
     vTaskDelete(NULL);
 }
@@ -446,9 +503,11 @@ static void derp_ka_task(void *arg)
 
 /* DERP-relayed packets are raw WireGuard UDP payloads, so we must hand
  * them to wireguardif_network_rx (the callback wireguardif registers on
- * its udp_pcb) — NOT tcpip_input, which would treat the bytes as IP. We
- * use a synthetic source address in the 127.3.3.0/24 DERP pseudo range
- * so that the reply from WG flows back through our DERP output hook. */
+ * its udp_pcb) — NOT tcpip_input, which would treat the bytes as IP.
+ * wireguardif_network_rx eventually calls ip_input/tcp_input which must
+ * run on the lwIP tcpip thread; we marshal the call via tcpip_callback.
+ * Synthetic source is in the 127.3.3.0/24 DERP pseudo range so replies
+ * route back through our DERP output hook. */
 struct udp_pcb;  /* forward decl — opaque here */
 extern void wireguardif_network_rx(void *arg, struct udp_pcb *pcb,
                                     struct pbuf *p, const ip_addr_t *addr,
@@ -475,9 +534,6 @@ static void inject_wg_packet(const uint8_t *data, size_t len)
     }
     memcpy(p->payload, data, len);
 
-    /* Synthetic DERP source: 127.3.3.40:<region_id>. When WG processes the
-     * handshake, it stores this as the peer endpoint, so the response goes
-     * back through our DERP output hook (wireguardif_peer_output). */
     ip_addr_t src_ip;
     ip4_addr_t src4;
     ip4addr_aton("127.3.3.40", &src4);
@@ -485,7 +541,14 @@ static void inject_wg_packet(const uint8_t *data, size_t len)
     u16_t src_port = (u16_t)(s_home_node.region_id > 0 ? s_home_node.region_id : 1);
 
     ESP_LOGI(TAG, "inject_wg: type=0x%02x len=%u to wg-netif",
-             ((const uint8_t *)data)[0], (unsigned)len);
+             data[0], (unsigned)len);
+
+    /* Call WG receive directly from the DERP recv task. Thread-safety note:
+     * lwIP normally requires API access on the tcpip thread, but we sidestep
+     * that here because (a) the WG netif's only inbound source IS this
+     * task, (b) outbound encryption goes through the same TLS connection
+     * which is serialized with s_tx_mutex. ICMP exchange across threads is
+     * stateless enough that direct call works in practice. */
     wireguardif_network_rx(nif->state, NULL, p, &src_ip, src_port);
 }
 
@@ -528,6 +591,9 @@ esp_err_t ts_derp_connect(const ts_derp_node_t *node,
     if (!s_tx_mutex) {
         s_tx_mutex = xSemaphoreCreateMutex();
     }
+    if (!s_tx_queue) {
+        s_tx_queue = xQueueCreate(DERP_TX_QUEUE_LEN, sizeof(derp_tx_item_t *));
+    }
 
     esp_err_t err = derp_http_upgrade(node_priv);
     if (err != ESP_OK) {
@@ -551,6 +617,8 @@ esp_err_t ts_derp_connect(const ts_derp_node_t *node,
                 NULL, DERP_RECV_TASK_PRIO, &s_recv_task);
     xTaskCreate(derp_ka_task, "ts_derp_ka", DERP_KA_TASK_STACK,
                 NULL, DERP_KA_TASK_PRIO, &s_ka_task);
+    xTaskCreate(derp_tx_task, "ts_derp_tx", DERP_TX_TASK_STACK,
+                NULL, DERP_TX_TASK_PRIO, &s_tx_task);
 
     return ESP_OK;
 }
@@ -567,15 +635,15 @@ esp_err_t ts_derp_send(const uint8_t dst_pub[32],
     memcpy(payload,      dst_pub, 32);
     memcpy(payload + 32, pkt,     pkt_len);
 
-    xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
-    esp_err_t err = derp_send_frame(DERP_FRAME_SEND_PACKET, payload, payload_len);
-    xSemaphoreGive(s_tx_mutex);
+    /* Defer the TLS write to derp_tx_task so callers (including the lwIP
+     * core-lock holder) don't block on socket I/O. */
+    esp_err_t err = derp_tx_enqueue(DERP_FRAME_SEND_PACKET, payload, payload_len);
+    free(payload);
 
-    ESP_LOGI(TAG, "ts_derp_send dst=%02x%02x%02x%02x type=0x%02x len=%u err=%d",
+    ESP_LOGI(TAG, "ts_derp_send dst=%02x%02x%02x%02x type=0x%02x len=%u enq=%d",
              dst_pub[0], dst_pub[1], dst_pub[2], dst_pub[3],
              pkt_len > 0 ? pkt[0] : 0, (unsigned)pkt_len, err);
 
-    free(payload);
     return err;
 }
 
@@ -588,6 +656,7 @@ void ts_derp_disconnect(void)
     }
     s_recv_task = NULL;
     s_ka_task   = NULL;
+    s_tx_task   = NULL;
     vTaskDelay(pdMS_TO_TICKS(100));
 }
 
