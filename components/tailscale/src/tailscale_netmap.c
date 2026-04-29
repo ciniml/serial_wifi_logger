@@ -23,11 +23,12 @@ static const char *TAG = "ts_netmap";
 /* Peer table                                                           */
 /* ------------------------------------------------------------------ */
 
-#define TS_NETMAP_MAX_PEERS 8
+#define TS_NETMAP_MAX_PEERS 16
 
 typedef struct {
     bool     active;
     uint8_t  wg_index;         /* WireGuard peer index */
+    int64_t  node_id;          /* Tailscale NodeID (for PeersRemoved) */
     uint8_t  node_pub[32];     /* WireGuard public key (raw) */
     uint8_t  disco_pub[32];    /* DISCO public key (raw) */
     char     ts_ip[20];        /* 100.x.y.z */
@@ -75,6 +76,16 @@ static int find_peer_slot(const uint8_t pub[32])
     for (int i = 0; i < TS_NETMAP_MAX_PEERS; i++) {
         if (s_peers[i].active &&
             memcmp(s_peers[i].node_pub, pub, 32) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int find_peer_slot_by_id(int64_t node_id)
+{
+    for (int i = 0; i < TS_NETMAP_MAX_PEERS; i++) {
+        if (s_peers[i].active && s_peers[i].node_id == node_id) {
             return i;
         }
     }
@@ -134,6 +145,7 @@ static void parse_derpmap(const cJSON *derp_map_obj)
                 sizeof(best_node.hostname));
         best_node.derp_port = cJSON_IsNumber(port_j) ? (uint16_t)port_j->valuedouble : 443;
         best_node.stun_port = cJSON_IsNumber(stun_j) ? (uint16_t)stun_j->valuedouble : 3478;
+        best_node.region_id = region_id;
         found = true;
     }
 
@@ -141,6 +153,150 @@ static void parse_derpmap(const cJSON *derp_map_obj)
         ESP_LOGI(TAG, "DERP home server: %s:%d", best_node.hostname, best_node.derp_port);
         s_derp_home       = best_node;
         s_derp_home_valid = true;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Peer array application — used for both "Peers" (full) and          */
+/* "PeersChanged" (incremental).                                       */
+/* ------------------------------------------------------------------ */
+
+static void apply_peer_array(const cJSON *arr, bool full_snapshot)
+{
+    /* For full snapshots, mark every active slot for removal unless
+     * it appears in the incoming array. */
+    bool keep[TS_NETMAP_MAX_PEERS] = {false};
+
+    cJSON *peer_j;
+    cJSON_ArrayForEach(peer_j, arr) {
+        if (!cJSON_IsObject(peer_j)) continue;
+
+        cJSON *key_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Key");
+        if (!cJSON_IsString(key_j)) continue;
+
+        uint8_t node_pub[32];
+        if (!ts_key_from_hex(key_j->valuestring, node_pub)) {
+            ESP_LOGW(TAG, "Failed to decode peer key: %s", key_j->valuestring);
+            continue;
+        }
+
+        cJSON *id_j = cJSON_GetObjectItemCaseSensitive(peer_j, "ID");
+        int64_t node_id = cJSON_IsNumber(id_j) ? (int64_t)id_j->valuedouble : 0;
+
+        uint8_t disco_pub[32] = {0};
+        cJSON *disco_j = cJSON_GetObjectItemCaseSensitive(peer_j, "DiscoKey");
+        if (cJSON_IsString(disco_j)) {
+            ts_key_from_hex(disco_j->valuestring, disco_pub);
+        }
+
+        char ts_ip[20] = {0};
+        cJSON *addrs_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Addresses");
+        if (cJSON_IsArray(addrs_j) && cJSON_GetArraySize(addrs_j) > 0) {
+            cJSON *a0 = cJSON_GetArrayItem(addrs_j, 0);
+            if (cJSON_IsString(a0)) {
+                strip_prefix(a0->valuestring, ts_ip, sizeof(ts_ip));
+            }
+        }
+
+        /* Endpoint: prefer direct UDP endpoint; fall back to DERP pseudo-IP */
+        ip_addr_t ep_ip = IPADDR4_INIT(0);
+        uint16_t  ep_port = 0;
+        bool have_direct_ep = false;
+        cJSON *eps_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Endpoints");
+        if (cJSON_IsArray(eps_j) && cJSON_GetArraySize(eps_j) > 0) {
+            cJSON *ep0 = cJSON_GetArrayItem(eps_j, 0);
+            if (cJSON_IsString(ep0)) {
+                if (parse_endpoint(ep0->valuestring, &ep_ip, &ep_port))
+                    have_direct_ep = true;
+            }
+        }
+        if (!have_direct_ep) {
+            cJSON *derp_j = cJSON_GetObjectItemCaseSensitive(peer_j, "DERP");
+            if (cJSON_IsString(derp_j)) {
+                const char *colon = strrchr(derp_j->valuestring, ':');
+                if (colon) {
+                    ep_port = (uint16_t)atoi(colon + 1);
+                    ip4_addr_t derp4;
+                    ip4addr_aton("127.3.3.40", &derp4);
+                    ip_addr_copy_from_ip4(ep_ip, derp4);
+                }
+            }
+        }
+
+        char pub_b64[64];
+        size_t b64_len = sizeof(pub_b64);
+        extern bool wireguard_base64_encode(const uint8_t *, size_t, char *, size_t *);
+        wireguard_base64_encode(node_pub, 32, pub_b64, &b64_len);
+
+        int slot = find_peer_slot(node_pub);
+        if (slot >= 0) {
+            keep[slot] = true;
+            s_peers[slot].node_id = node_id;
+            if (!ip_addr_isany(&ep_ip) && ep_port != 0) {
+                wireguard_esp32_update_endpoint(s_peers[slot].wg_index,
+                                                &ep_ip, ep_port);
+            }
+            continue;
+        }
+
+        slot = alloc_peer_slot();
+        if (slot < 0) {
+            ESP_LOGW(TAG, "Peer table full, dropping peer %s", ts_ip);
+            continue;
+        }
+
+        ip4_addr_t allowed4, mask4;
+        if (ts_ip[0] && ip4addr_aton(ts_ip, &allowed4)) {
+            ip4addr_aton("255.255.255.255", &mask4);
+        } else {
+            ip4_addr_set_zero(&allowed4);
+            ip4_addr_set_zero(&mask4);
+        }
+        ip_addr_t allowed_ip, allowed_mask;
+        ip_addr_copy_from_ip4(allowed_ip, allowed4);
+        ip_addr_copy_from_ip4(allowed_mask, mask4);
+
+        uint8_t wg_idx;
+        esp_err_t err = wireguard_esp32_add_peer(
+            pub_b64,
+            &allowed_ip,
+            &allowed_mask,
+            ip_addr_isany(&ep_ip) ? NULL : &ep_ip,
+            ep_port,
+            25,
+            &wg_idx);
+
+        if (err == ESP_OK) {
+            memcpy(s_peers[slot].node_pub,  node_pub,  32);
+            memcpy(s_peers[slot].disco_pub, disco_pub, 32);
+            strlcpy(s_peers[slot].ts_ip, ts_ip, sizeof(s_peers[slot].ts_ip));
+            s_peers[slot].wg_index = wg_idx;
+            s_peers[slot].node_id  = node_id;
+            s_peers[slot].active   = true;
+            keep[slot] = true;
+            ESP_LOGI(TAG, "Added peer %s id=%lld (wg_idx=%d, direct=%d)",
+                     ts_ip, (long long)node_id, wg_idx, have_direct_ep);
+
+            if (have_direct_ep) {
+                bool disco_set = false;
+                for (int b = 0; b < 32; b++) if (disco_pub[b]) { disco_set = true; break; }
+                if (disco_set) {
+                    ts_disco_ping(wg_idx, disco_pub, &ep_ip, ep_port);
+                }
+            }
+        }
+    }
+
+    /* Removal sweep only on full snapshots */
+    if (full_snapshot) {
+        for (int i = 0; i < TS_NETMAP_MAX_PEERS; i++) {
+            if (s_peers[i].active && !keep[i]) {
+                ESP_LOGI(TAG, "Removing peer %s (wg_idx=%d)",
+                         s_peers[i].ts_ip, s_peers[i].wg_index);
+                wireguard_esp32_remove_peer(s_peers[i].wg_index);
+                s_peers[i].active = false;
+            }
+        }
     }
 }
 
@@ -174,7 +330,9 @@ esp_err_t ts_netmap_apply(const char *json_str, size_t json_len)
                 ESP_LOGI(TAG, "Self Tailscale IP: %s", s_self_ip);
 
                 /* Update WireGuard interface address */
-                wireguard_esp32_set_address(s_self_ip, "255.255.255.255");
+                /* /10 covers Tailscale's 100.64.0.0/10 CGNAT range so lwIP
+                 * routes all peer traffic through the WG netif. */
+                wireguard_esp32_set_address(s_self_ip, "255.192.0.0");
             }
         }
     }
@@ -185,152 +343,68 @@ esp_err_t ts_netmap_apply(const char *json_str, size_t json_len)
         parse_derpmap(derpmap);
     }
 
-    /* ---- Peers ------------------------------------------------------ */
-    cJSON *peers = cJSON_GetObjectItemCaseSensitive(root, "Peers");
-    if (!cJSON_IsArray(peers)) {
-        ESP_LOGI(TAG, "No Peers array in MapResponse");
+    /* ---- Top-level field diagnostic --------------------------------- */
+    {
+        char keys[256] = {0};
+        size_t off = 0;
+        cJSON *child = root->child;
+        while (child && off < sizeof(keys) - 2) {
+            const char *name = child->string ? child->string : "?";
+            size_t n = strlen(name);
+            if (off + n + 2 >= sizeof(keys)) break;
+            if (off) keys[off++] = ',';
+            memcpy(keys + off, name, n);
+            off += n;
+            child = child->next;
+        }
+        keys[off] = '\0';
+        ESP_LOGI(TAG, "MapResponse keys: %s", keys);
+    }
+
+    /* ---- KeepAlive (silent heartbeat) ------------------------------- */
+    cJSON *ka = cJSON_GetObjectItemCaseSensitive(root, "KeepAlive");
+    if (cJSON_IsTrue(ka)) {
         cJSON_Delete(root);
-        return ESP_OK; /* Empty map is valid */
+        return ESP_OK;
     }
-    ESP_LOGI(TAG, "Peers in MapResponse: %d", cJSON_GetArraySize(peers));
 
-    /* Mark all active peers for potential removal */
-    bool keep[TS_NETMAP_MAX_PEERS] = {false};
+    /* ---- Peers (full snapshot) -------------------------------------- */
+    cJSON *peers = cJSON_GetObjectItemCaseSensitive(root, "Peers");
+    if (cJSON_IsArray(peers)) {
+        ESP_LOGI(TAG, "Peers (full snapshot): %d", cJSON_GetArraySize(peers));
+        apply_peer_array(peers, true);
+    }
 
-    cJSON *peer_j;
-    cJSON_ArrayForEach(peer_j, peers) {
-        if (!cJSON_IsObject(peer_j)) continue;
+    /* ---- PeersChanged (incremental — full Peer records) ------------- */
+    cJSON *peers_changed = cJSON_GetObjectItemCaseSensitive(root, "PeersChanged");
+    if (cJSON_IsArray(peers_changed)) {
+        ESP_LOGI(TAG, "PeersChanged: %d", cJSON_GetArraySize(peers_changed));
+        apply_peer_array(peers_changed, false);
+    }
 
-        /* WireGuard public key: "Key": "nodekey:hexhex..." */
-        cJSON *key_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Key");
-        if (!cJSON_IsString(key_j)) continue;
-
-        uint8_t node_pub[32];
-        if (!ts_key_from_hex(key_j->valuestring, node_pub)) {
-            ESP_LOGW(TAG, "Failed to decode peer key: %s", key_j->valuestring);
-            continue;
-        }
-
-        /* DISCO key */
-        uint8_t disco_pub[32] = {0};
-        cJSON *disco_j = cJSON_GetObjectItemCaseSensitive(peer_j, "DiscoKey");
-        if (cJSON_IsString(disco_j)) {
-            ts_key_from_hex(disco_j->valuestring, disco_pub);
-        }
-
-        /* Tailscale IP (first Addresses entry) */
-        char ts_ip[20] = {0};
-        cJSON *addrs_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Addresses");
-        if (cJSON_IsArray(addrs_j) && cJSON_GetArraySize(addrs_j) > 0) {
-            cJSON *a0 = cJSON_GetArrayItem(addrs_j, 0);
-            if (cJSON_IsString(a0)) {
-                strip_prefix(a0->valuestring, ts_ip, sizeof(ts_ip));
-            }
-        }
-
-        /* Endpoint: prefer direct UDP endpoint; fall back to DERP pseudo-IP */
-        ip_addr_t ep_ip = IPADDR4_INIT(0);
-        uint16_t  ep_port = 0;
-        bool have_direct_ep = false;
-        cJSON *eps_j = cJSON_GetObjectItemCaseSensitive(peer_j, "Endpoints");
-        if (cJSON_IsArray(eps_j) && cJSON_GetArraySize(eps_j) > 0) {
-            cJSON *ep0 = cJSON_GetArrayItem(eps_j, 0);
-            if (cJSON_IsString(ep0)) {
-                if (parse_endpoint(ep0->valuestring, &ep_ip, &ep_port))
-                    have_direct_ep = true;
-            }
-        }
-        /* If no direct endpoint, use DERP pseudo-IP (127.3.3.40:region) */
-        if (!have_direct_ep) {
-            cJSON *derp_j = cJSON_GetObjectItemCaseSensitive(peer_j, "DERP");
-            if (cJSON_IsString(derp_j)) {
-                /* Format: "127.3.3.40:region" */
-                const char *colon = strrchr(derp_j->valuestring, ':');
-                if (colon) {
-                    ep_port = (uint16_t)atoi(colon + 1);
-                    /* DERP pseudo-IP: 127.3.3.40 */
-                    ip4_addr_t derp4;
-                    ip4addr_aton("127.3.3.40", &derp4);
-                    ip_addr_copy_from_ip4(ep_ip, derp4);
-                }
-            }
-        }
-
-        /* Encode public key as base64 for wireguard_esp32_add_peer */
-        char pub_b64[64];
-        size_t b64_len = sizeof(pub_b64);
-        extern bool wireguard_base64_encode(const uint8_t *, size_t, char *, size_t *);
-        wireguard_base64_encode(node_pub, 32, pub_b64, &b64_len);
-
-        /* Peer already known? */
-        int slot = find_peer_slot(node_pub);
-        if (slot >= 0) {
-            keep[slot] = true;
-            /* Update endpoint if it changed */
-            if (!ip_addr_isany(&ep_ip) && ep_port != 0) {
-                wireguard_esp32_update_endpoint(s_peers[slot].wg_index,
-                                               &ep_ip, ep_port);
-            }
-        } else {
-            /* New peer */
-            slot = alloc_peer_slot();
-            if (slot < 0) {
-                ESP_LOGW(TAG, "Peer table full, dropping peer %s", ts_ip);
-                continue;
-            }
-
-            /* Allowed IP: peer's 100.x.y.z/32 */
-            ip4_addr_t allowed4, mask4;
-            if (ts_ip[0] && ip4addr_aton(ts_ip, &allowed4)) {
-                ip4addr_aton("255.255.255.255", &mask4);
-            } else {
-                ip4_addr_set_zero(&allowed4);
-                ip4_addr_set_zero(&mask4);
-            }
-            ip_addr_t allowed_ip, allowed_mask;
-            ip_addr_copy_from_ip4(allowed_ip, allowed4);
-            ip_addr_copy_from_ip4(allowed_mask, mask4);
-
-            uint8_t wg_idx;
-            esp_err_t err = wireguard_esp32_add_peer(
-                pub_b64,
-                &allowed_ip,
-                &allowed_mask,
-                ip_addr_isany(&ep_ip) ? NULL : &ep_ip,
-                ep_port,
-                25,   /* keepalive: 25s */
-                &wg_idx);
-
-            if (err == ESP_OK) {
-                memcpy(s_peers[slot].node_pub,  node_pub,  32);
-                memcpy(s_peers[slot].disco_pub, disco_pub, 32);
-                strlcpy(s_peers[slot].ts_ip, ts_ip, sizeof(s_peers[slot].ts_ip));
-                s_peers[slot].wg_index = wg_idx;
-                s_peers[slot].active   = true;
-                keep[slot] = true;
-                ESP_LOGI(TAG, "Added peer %s (wg_idx=%d, direct=%d)",
-                         ts_ip, wg_idx, have_direct_ep);
-
-                /* Probe direct path if peer has DISCO key + direct endpoint */
-                if (have_direct_ep) {
-                    bool disco_set = false;
-                    for (int b = 0; b < 32; b++) if (disco_pub[b]) { disco_set = true; break; }
-                    if (disco_set) {
-                        ts_disco_ping(wg_idx, disco_pub, &ep_ip, ep_port);
-                    }
-                }
+    /* ---- PeersRemoved (incremental — array of NodeIDs) -------------- */
+    cJSON *peers_removed = cJSON_GetObjectItemCaseSensitive(root, "PeersRemoved");
+    if (cJSON_IsArray(peers_removed)) {
+        cJSON *id_j;
+        cJSON_ArrayForEach(id_j, peers_removed) {
+            if (!cJSON_IsNumber(id_j)) continue;
+            int64_t node_id = (int64_t)id_j->valuedouble;
+            int slot = find_peer_slot_by_id(node_id);
+            if (slot >= 0) {
+                ESP_LOGI(TAG, "Removing peer %s (id=%lld, wg_idx=%d)",
+                         s_peers[slot].ts_ip, (long long)node_id,
+                         s_peers[slot].wg_index);
+                wireguard_esp32_remove_peer(s_peers[slot].wg_index);
+                s_peers[slot].active = false;
             }
         }
     }
 
-    /* Remove peers no longer in the map */
-    for (int i = 0; i < TS_NETMAP_MAX_PEERS; i++) {
-        if (s_peers[i].active && !keep[i]) {
-            ESP_LOGI(TAG, "Removing peer %s (wg_idx=%d)",
-                     s_peers[i].ts_ip, s_peers[i].wg_index);
-            wireguard_esp32_remove_peer(s_peers[i].wg_index);
-            s_peers[i].active = false;
-        }
+    /* ---- PeersChangedPatch (sub-field updates — not implemented) ---- */
+    cJSON *patch = cJSON_GetObjectItemCaseSensitive(root, "PeersChangedPatch");
+    if (cJSON_IsArray(patch) && cJSON_GetArraySize(patch) > 0) {
+        ESP_LOGW(TAG, "PeersChangedPatch (%d entries) — not implemented, skipping",
+                 cJSON_GetArraySize(patch));
     }
 
     cJSON_Delete(root);

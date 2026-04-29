@@ -36,9 +36,9 @@ CONFIG_HTTPD_WS_SUPPORT=n
 # no PPP interface is actually created — this is purely a build-time switch.
 CONFIG_LWIP_PPP_SUPPORT=y
 
-# Tailscale / WireGuard: increase max peers for managed mode
-# When TAILSCALE_ENABLE=y, WIREGUARD_MAX_PEERS is set to 8 via Kconfig select.
-# For standalone WireGuard (no Tailscale), this stays at the default of 1.
+# Tailscale / WireGuard: increase max peers for managed mode.
+# Tailscale tailnets can have many peers; we accept the SRAM cost (~800 B each).
+CONFIG_WIREGUARD_MAX_PEERS=16
 
 # TLS CA store: needed for HTTPS connections to login.tailscale.com and DERP servers
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y

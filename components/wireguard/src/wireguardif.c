@@ -125,11 +125,15 @@ static err_t wireguardif_peer_output(struct netif *netif, struct pbuf *q, struct
 		}
 	}
 
-	return udp_sendto_if(device->udp_pcb, q, &peer->ip, peer->port, device->underlying_netif);
+	return device->underlying_netif
+		? udp_sendto_if(device->udp_pcb, q, &peer->ip, peer->port, device->underlying_netif)
+		: udp_sendto(device->udp_pcb, q, &peer->ip, peer->port);
 }
 
 static err_t wireguardif_device_output(struct wireguard_device *device, struct pbuf *q, const ip_addr_t *ipaddr, u16_t port) {
-	return udp_sendto_if(device->udp_pcb, q, ipaddr, port, device->underlying_netif);
+	return device->underlying_netif
+		? udp_sendto_if(device->udp_pcb, q, ipaddr, port, device->underlying_netif)
+		: udp_sendto(device->udp_pcb, q, ipaddr, port);
 }
 
 static err_t wireguardif_output_to_peer(struct netif *netif, struct pbuf *q, const ip_addr_t *ipaddr, struct wireguard_peer *peer) {
@@ -359,7 +363,12 @@ static void wireguardif_process_data_message(struct wireguard_device *device, st
 							// Also check packet length!
 #if LWIP_IPV4
 							if (IPH_V(iphdr) == 4) {
-								ip_addr_copy_from_ip4(dest, iphdr->dest);
+								/* Per WG spec the inbound validity check is on
+								 * the inner SOURCE IP (anti-spoofing). The
+								 * original code used iphdr->dest, which only
+								 * worked when the local netif IP happened to
+								 * match the peer's allowed IPs. */
+								ip_addr_copy_from_ip4(dest, iphdr->src);
 								for (x=0; x < WIREGUARD_MAX_SRC_IPS; x++) {
 									if (peer->allowed_source_ips[x].valid) {
 										if (ip_addr_netcmp(&dest, &peer->allowed_source_ips[x].ip, ip_2_ip4(&peer->allowed_source_ips[x].mask))) {
@@ -957,15 +966,23 @@ err_t wireguardif_init(struct netif *netif) {
 	uint8_t private_key[WIREGUARD_PRIVATE_KEY_LEN];
 	size_t private_key_len = sizeof(private_key);
 
-	/* ESP-IDF 6.0 port: tcpip_adapter_get_netif replaced with esp_netif API */
+	/* ESP-IDF 6.0 port: tcpip_adapter_get_netif replaced with esp_netif API.
+	 * Try common ifkeys; leave NULL if none are up — sends will fall through
+	 * to udp_sendto() which routes via the lwIP default route. */
 	struct netif *underlying_netif = NULL;
 	{
-		esp_netif_t *sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-		if (sta_netif != NULL) {
-			underlying_netif = (struct netif *)esp_netif_get_netif_impl(sta_netif);
+		static const char * const ifkeys[] = {
+			"WIFI_STA_DEF", "ETH_DEF", "PPP_DEF", NULL
+		};
+		for (int i = 0; ifkeys[i] && !underlying_netif; i++) {
+			esp_netif_t *n = esp_netif_get_handle_from_ifkey(ifkeys[i]);
+			if (n) underlying_netif = (struct netif *)esp_netif_get_netif_impl(n);
+			if (underlying_netif)
+				log_i(TAG "underlying_netif=%p via %s", underlying_netif, ifkeys[i]);
 		}
 	}
-	log_i(TAG "underlying_netif = %p", underlying_netif);
+	if (!underlying_netif)
+		log_i(TAG "underlying_netif=NULL — will use default route");
 
 	LWIP_ASSERT("netif != NULL", (netif != NULL));
 	LWIP_ASSERT("state != NULL", (netif->state != NULL));

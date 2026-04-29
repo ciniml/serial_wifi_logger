@@ -107,10 +107,21 @@ static void ctrl_task(void *arg)
 
         /* Start DERP relay if a home server was found in the DERPMap */
         ts_derp_node_t derp_home;
-        if (ts_netmap_get_derp_home(&derp_home)) {
+        bool have_derp = ts_netmap_get_derp_home(&derp_home);
+        if (have_derp) {
             ts_derp_set_home(&derp_home,
                              ctx->keys->node_priv,
                              ctx->keys->node_pub);
+        }
+
+        /* Re-issue MapRequest now that we know our DERP region, so the
+         * coordinator can advertise our NetInfo.PreferredDERP to peers. */
+        if (have_derp) {
+            err = ts_ctrl_map_request(ctx);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "Updated MapRequest failed (%s)",
+                         esp_err_to_name(err));
+            }
         }
 
         /* Run MapResponse long-poll loop (blocks until disconnected) */

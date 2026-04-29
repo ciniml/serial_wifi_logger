@@ -34,7 +34,7 @@ static const char *TAG = "ts_derp";
 /* State                                                                */
 /* ------------------------------------------------------------------ */
 
-#define DERP_RECV_TASK_STACK  4096
+#define DERP_RECV_TASK_STACK  8192   /* WG decryption + lwIP input may use ~6KB */
 #define DERP_RECV_TASK_PRIO   5
 #define DERP_KA_TASK_STACK    2048
 #define DERP_KA_TASK_PRIO     4
@@ -404,6 +404,9 @@ static void derp_recv_task(void *arg)
 
         switch (frame_type) {
         case DERP_FRAME_RECV_PACKET:
+            ESP_LOGI(TAG, "DERP RecvPacket src=%02x%02x%02x%02x len=%"PRIu32,
+                     frame_buf[0], frame_buf[1], frame_buf[2], frame_buf[3],
+                     payload_len - 32);
             if (payload_len > 32)
                 inject_wg_packet(frame_buf + 32, payload_len - 32);
             break;
@@ -441,9 +444,16 @@ static void derp_ka_task(void *arg)
 /* WireGuard packet injection                                           */
 /* ------------------------------------------------------------------ */
 
-/* The WireGuard netif is not directly accessible here.
- * We use the lwIP netif list to find the first netif whose name starts
- * with "wg" (assigned by wireguardif_init) and call its input function. */
+/* DERP-relayed packets are raw WireGuard UDP payloads, so we must hand
+ * them to wireguardif_network_rx (the callback wireguardif registers on
+ * its udp_pcb) — NOT tcpip_input, which would treat the bytes as IP. We
+ * use a synthetic source address in the 127.3.3.0/24 DERP pseudo range
+ * so that the reply from WG flows back through our DERP output hook. */
+struct udp_pcb;  /* forward decl — opaque here */
+extern void wireguardif_network_rx(void *arg, struct udp_pcb *pcb,
+                                    struct pbuf *p, const ip_addr_t *addr,
+                                    u16_t port);
+
 static void inject_wg_packet(const uint8_t *data, size_t len)
 {
     extern struct netif *netif_list;
@@ -453,7 +463,7 @@ static void inject_wg_packet(const uint8_t *data, size_t len)
         if (nif->name[0] == 'w' && nif->name[1] == 'g') break;
         nif = nif->next;
     }
-    if (!nif) {
+    if (!nif || !nif->state) {
         ESP_LOGD(TAG, "inject_wg_packet: WireGuard netif not found");
         return;
     }
@@ -464,9 +474,19 @@ static void inject_wg_packet(const uint8_t *data, size_t len)
         return;
     }
     memcpy(p->payload, data, len);
-    if (tcpip_input(p, nif) != ERR_OK) {
-        pbuf_free(p);
-    }
+
+    /* Synthetic DERP source: 127.3.3.40:<region_id>. When WG processes the
+     * handshake, it stores this as the peer endpoint, so the response goes
+     * back through our DERP output hook (wireguardif_peer_output). */
+    ip_addr_t src_ip;
+    ip4_addr_t src4;
+    ip4addr_aton("127.3.3.40", &src4);
+    ip_addr_copy_from_ip4(src_ip, src4);
+    u16_t src_port = (u16_t)(s_home_node.region_id > 0 ? s_home_node.region_id : 1);
+
+    ESP_LOGI(TAG, "inject_wg: type=0x%02x len=%u to wg-netif",
+             ((const uint8_t *)data)[0], (unsigned)len);
+    wireguardif_network_rx(nif->state, NULL, p, &src_ip, src_port);
 }
 
 /* ------------------------------------------------------------------ */
@@ -550,6 +570,10 @@ esp_err_t ts_derp_send(const uint8_t dst_pub[32],
     xSemaphoreTake(s_tx_mutex, portMAX_DELAY);
     esp_err_t err = derp_send_frame(DERP_FRAME_SEND_PACKET, payload, payload_len);
     xSemaphoreGive(s_tx_mutex);
+
+    ESP_LOGI(TAG, "ts_derp_send dst=%02x%02x%02x%02x type=0x%02x len=%u err=%d",
+             dst_pub[0], dst_pub[1], dst_pub[2], dst_pub[3],
+             pkt_len > 0 ? pkt[0] : 0, (unsigned)pkt_len, err);
 
     free(payload);
     return err;

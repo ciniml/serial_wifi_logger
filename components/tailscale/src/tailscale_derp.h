@@ -32,6 +32,7 @@ typedef struct {
     char hostname[64];
     uint16_t stun_port;
     uint16_t derp_port;  /* typically 443 */
+    int region_id;       /* Tailscale DERPMap region ID (>0 when valid) */
 } ts_derp_node_t;
 
 /**

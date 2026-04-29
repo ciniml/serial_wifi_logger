@@ -827,7 +827,7 @@ esp_err_t ts_ctrl_register(ts_ctrl_ctx_t *ctx)
     ts_key_to_hex("nodekey:", ctx->keys->node_pub, node_key_hex, sizeof(node_key_hex));
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "Version",    17);
+    cJSON_AddNumberToObject(root, "Version",    65);
     cJSON_AddStringToObject(root, "NodeKey",    node_key_hex);
     cJSON_AddStringToObject(root, "OldNodeKey", node_key_hex);
 
@@ -895,7 +895,7 @@ esp_err_t ts_ctrl_map_request(ts_ctrl_ctx_t *ctx)
     ts_key_to_hex("discokey:", ctx->keys->disco_pub, disco_key_hex, sizeof(disco_key_hex));
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddNumberToObject(root, "Version",     17);
+    cJSON_AddNumberToObject(root, "Version",     65);
     cJSON_AddStringToObject(root, "NodeKey",     node_key_hex);
     cJSON_AddStringToObject(root, "DiscoKey",    disco_key_hex);
     cJSON_AddBoolToObject(root,   "Stream",      true);
@@ -905,6 +905,19 @@ esp_err_t ts_ctrl_map_request(ts_ctrl_ctx_t *ctx)
     cJSON *hi = cJSON_CreateObject();
     cJSON_AddStringToObject(hi, "OS",       "linux");
     cJSON_AddStringToObject(hi, "Hostname", ctx->hostname);
+
+    /* Tell the coordinator which DERP region we're connected to so other
+     * peers know where to relay packets for us. On the very first MapRequest
+     * we don't know yet (no DERPMap parsed); the ctrl_task re-issues this
+     * request after the first MapResponse arrives. */
+    ts_derp_node_t derp_hi;
+    if (ts_netmap_get_derp_home(&derp_hi) && derp_hi.region_id > 0) {
+        cJSON *netinfo = cJSON_CreateObject();
+        cJSON_AddNumberToObject(netinfo, "PreferredDERP", derp_hi.region_id);
+        cJSON_AddStringToObject(netinfo, "LinkType", "wired");
+        cJSON_AddItemToObject(hi, "NetInfo", netinfo);
+    }
+
     cJSON_AddItemToObject(root, "Hostinfo", hi);
 
     char *json_str = cJSON_PrintUnformatted(root);
