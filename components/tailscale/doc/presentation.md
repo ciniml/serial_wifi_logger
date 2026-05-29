@@ -48,19 +48,37 @@ LAN内のログ収集はすでにできる。次の課題は、お客様先や�
 NAT越しに、しかもセキュアに繋ぐこと。ここでVPNが要る。
 -->
 
-## なぜTailscale? / なぜ自前実装?
+## 前提: WireGuardは移植済み、でも足りない
 
-* **Tailscale**: WireGuardベースのVPN
-    * NAT越え・デバイス認証・経路探索を「サクッと」やってくれる
-* でも公式 `tailscaled` は Go製で数十MB → ESP32(RAM数百KB)には載らない
+* 筆者は以前から **lwIP向けのWireGuard実装** (Daniel Hope / smartalock) を
+  **ESP32に移植**して利用していた → `components/wireguard`
+* ただし **WireGuardが提供するのは「暗号化された通信路」だけ**
+
+| | WireGuard | Tailscale |
+|:--|:--:|:--|
+| 暗号トンネル | ✅ | ✅ (WireGuardを使用) |
+| ピア発見・鍵/IPの配布 | ❌ 手動設定 | ✅ コントロールプレーン |
+| NAT越え | ❌ 到達IP:portを自分で用意 | ✅ DERP + DISCO |
+
+* → 足りない「発見・配布・NAT越え」をかぶせるのが **Tailscale**
+
+<!--
+WireGuard自体は前からlwIP版を移植して使っていた。でもWGは通信路を暗号化するだけで、
+相手をどう見つけるか・NATをどう越えるかは面倒を見てくれない。そこをやるのがTailscale。
+-->
+
+## なぜ自前実装?
+
+* Tailscaleなら NAT越え・デバイス認証・経路探索が「サクッと」
+* でも公式 `tailscaled` は **Go製で数十MB** → ESP32(RAM数百KB)には載らない
 
 * そこで **必要最小限の機能だけ C で実装** (ESP-IDF 6.0)
-    * トンネル本体は既存 `components/wireguard` を **managedモード**で再利用
-    * Tailを「参加に必要な制御」だけに絞る
+    * トンネル本体は **移植済みの `components/wireguard` を managedモードで再利用**
+    * 足したのは「コントロール + DERP + DISCO」だけ
 
 <!--
 Tailscaleは便利だが本体はGo製で重くESP32に載らない。
-WireGuardはすでに持っているので、足りない「コントロール部分」だけCで書いた。
+WireGuardはすでに移植済みなので、足りないコントロール部分だけCで書いた。
 -->
 
 ## 全体像: コントロール / データの分離
