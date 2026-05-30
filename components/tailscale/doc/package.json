@@ -1,0 +1,16 @@
+{
+  "name": "tailscale-slides",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Marp slide deck for the ESP32 Tailscale component LT",
+  "scripts": {
+    "build": "node build.js",
+    "build:html": "node build.js html",
+    "build:pdf": "node build.js pdf",
+    "clean": "rm -f presentation.html presentation.pdf"
+  },
+  "devDependencies": {
+    "@marp-team/marp-cli": "^4.0.0",
+    "@marp-team/marp-core": "^4.0.0"
+  }
+}

@@ -25,3 +25,9 @@ Makefile.local
 # Locally-staged firmware for Web Flasher testing (CI populates these on Pages)
 docs/firmware/
 docs/versions.json
+
+# Marp slide build artifacts (see components/tailscale/doc/build.js)
+# (presentation.pdf is intentionally tracked as the distributable LT deck)
+components/tailscale/doc/node_modules/
+components/tailscale/doc/package-lock.json
+components/tailscale/doc/presentation.html
