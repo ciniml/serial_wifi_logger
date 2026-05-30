@@ -25,6 +25,15 @@ section { font-size: 26px; }
 pre { font-size: 17px; }
 </style>
 
+## 自己紹介
+
+![width:4cm](./fuga_300px.png)
+
+* 井田　健太
+* IoT機器 (Nature Remo) のファームウェア開発
+  * 主にESP32やnRF52のファームウェア開発
+  * Zephyr初心者になりました (1個製品でました)
+
 ## 背景: IoT機器のログをリモートで回収したい
 
 * 業務でESP32等のIoT機器を開発 → **動作中のログ収集**が課題
@@ -37,6 +46,8 @@ pre { font-size: 17px; }
 
 ## ネットワーク経由でのログ回収 (1/2)
 
+![bg right:40% fit](./rpi_is_expensive.png)
+
 * 一般的にはRaspberry PiなどのLinux SBCなどで対応
 * Raspberry Piの設定はメンドクサイ、電源の用意もメンドクサイ
 * イメージの用意もメンドクサイ、あと最近めっちゃ高い！
@@ -47,9 +58,9 @@ pre { font-size: 17px; }
 
 * ESP32-S3でUSB-UART経由でログ読み出し
 * 無線LAN経由でログを再送信
-* 単純なTCPでの送信に加えて RFC2217 に対応
+* 単純なTCPでの送信に加えて **RFC2217** に対応
 
-## RFC2217
+## RFC2217 (Telnet Com Port Control Option)
 
 * Telnetのオプションプロトコル
 * リモートホスト上のシリアルポートを制御するプロトコル
@@ -85,7 +96,8 @@ pre { font-size: 17px; }
 
 * 動かすのは難しくない。
     * WireGuard -> 実装済み
-    * コントロールプレーン -> ノード探索とネットマップ(IP・ピア一覧)の配布。自前実装 (ts2021)
+    * コントロールプレーン -> ノード探索とネットマップ(IP・ピア一覧)の配布。自前実装
+      * ts2021: Noise IKをトランスポートにつかうHTTP/2
     * NAT越しでの通信確立 -> DISCOでUDP直接経路を探索
     * リレー -> DERPによるHTTPS中継
 * Goのリファレンス実装がある
